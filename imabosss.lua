@@ -146,9 +146,9 @@ local queueteleport = missing("function", queue_on_teleport or (syn and syn.queu
 local gameIds = {
     "6884319169",
     "78699621133325",
+    "6218169544",
     "87206555365816",
-    "13278749064",
-	"6003577316"
+	"13278749064"
 }
 
 local messages = {
