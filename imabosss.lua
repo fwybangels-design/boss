@@ -1,26 +1,24 @@
+-- SANITIZED / DEBUG-FRIENDLY VERSION
+-- Note: sendMessage is stubbed (prints only) to avoid posting chat.
+-- Replace with a compliant sendMessage implementation yourself if/when messages are safe.
+
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local TextChatService = game:GetService("TextChatService")
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
 local StarterGui = game:GetService("StarterGui")
-local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local isRunning = true
 local joinedServers = {}
 local failedGames = {}
-local currentTargetPlayer = nil
-local usersProcessed = 0
-local maxUsersPerGame = 5
-local followConnection = nil
-local pingOptimized = false
+local messagesSent = false
 
-local function applyNetworkOptimizations()
+local function applyFastFlags()
     local flags = {
-        DFIntTaskSchedulerTargetFps = 20,
+        DFIntTaskSchedulerTargetFps = 15,
         FFlagDebugDisableInGameMenuV2 = true,
         FFlagDisableInGameMenuV2 = true,
         DFIntTextureQualityOverride = 1,
@@ -28,32 +26,17 @@ local function applyNetworkOptimizations()
         FFlagRenderNoShadows = true,
         DFIntDebugFRMQualityLevelOverride = 1,
         DFFlagTextureQualityOverrideEnabled = true,
-        FFlagHandleAltEnterFullscreenManually = false,
-        DFIntConnectionMTUSize = 1200,
-        DFIntMaxMissedWorldStepsRemembered = 1,
-        DFIntDefaultTimeoutTimeMs = 3000,
-        FFlagDebugSimIntegrationStabilityTesting = false,
-        DFFlagDebugRenderForceTechnologyVoxel = true,
-        FFlagUserHandleCameraToggle = false
+        FFlagHandleAltEnterFullscreenManually = false
     }
-    
+
     for flag, value in pairs(flags) do
         pcall(function()
-            game:SetFastFlag(flag, value)
+            -- most environments won't allow changing fast flags; keep pcall to avoid errors
+            if game.SetFastFlag then
+                game:SetFastFlag(flag, value)
+            end
         end)
     end
-end
-
-local function optimizeClientPerformance()
-    pcall(function()
-        settings().Network.IncomingReplicationLag = 0
-        settings().Network.RenderStreamedRegions = false
-        settings().Rendering.QualityLevel = 1
-        settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01
-        settings().Rendering.MaterialQualityLevel = Enum.MaterialQualityLevel.Level01
-        settings().Physics.AllowSleep = true
-        settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.DefaultAuto
-    end)
 end
 
 local function disableUI()
@@ -64,9 +47,9 @@ local function disableUI()
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, false)
         StarterGui:SetCore("TopbarEnabled", false)
     end)
-    
+
     pcall(function()
-        local playerGui = player:WaitForChild("PlayerGui", 2)
+        local playerGui = player:WaitForChild("PlayerGui", 5)
         if playerGui then
             for _, gui in pairs(playerGui:GetChildren()) do
                 if gui:IsA("ScreenGui") and gui.Name ~= "Chat" then
@@ -75,9 +58,9 @@ local function disableUI()
             end
         end
     end)
-    
+
     spawn(function()
-        while wait(2) do
+        while wait(1) do
             pcall(function()
                 if workspace.CurrentCamera then
                     workspace.CurrentCamera.FieldOfView = 30
@@ -91,9 +74,9 @@ local function enableChatFeatures()
     pcall(function()
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
     end)
-    
+
     pcall(function()
-        local playerGui = player:WaitForChild("PlayerGui", 2)
+        local playerGui = player:WaitForChild("PlayerGui", 5)
         if playerGui then
             local chatGui = playerGui:FindFirstChild("Chat")
             if chatGui then
@@ -101,37 +84,37 @@ local function enableChatFeatures()
             end
         end
     end)
-    
+
     local attempts = 0
     repeat
-        wait(0.2)
+        wait(0.5)
         attempts = attempts + 1
         pcall(function()
             if TextChatService.ChatInputBarConfiguration then
                 TextChatService.ChatInputBarConfiguration.Enabled = true
             end
         end)
-    until attempts > 15 or (TextChatService.ChatInputBarConfiguration and TextChatService.ChatInputBarConfiguration.TargetTextChannel)
+    until attempts > 20 or (TextChatService.ChatInputBarConfiguration and TextChatService.ChatInputBarConfiguration.TargetTextChannel)
 end
 
 local function optimizeRendering()
+    pcall(function()
+        settings().Rendering.QualityLevel = 1
+        settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01
+        settings().Rendering.MaterialQualityLevel = Enum.MaterialQualityLevel.Level01
+    end)
+
     spawn(function()
-        local heartbeatCount = 0
         RunService.Heartbeat:Connect(function()
-            heartbeatCount = heartbeatCount + 1
-            if heartbeatCount % 30 == 0 then
-                pcall(function()
-                    for _, obj in pairs(workspace:GetDescendants()) do
-                        if obj:IsA("Decal") or obj:IsA("Texture") then
-                            obj.Transparency = 1
-                        elseif obj:IsA("ParticleEmitter") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Fire") then
-                            obj.Enabled = false
-                        elseif obj:IsA("Sound") then
-                            obj.Volume = 0
-                        end
+            pcall(function()
+                for _, obj in pairs(workspace:GetDescendants()) do
+                    if obj:IsA("Decal") or obj:IsA("Texture") then
+                        obj.Transparency = 1
+                    elseif obj:IsA("ParticleEmitter") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Fire") then
+                        obj.Enabled = false
                     end
-                end)
-            end
+                end
+            end)
         end)
     end)
 end
@@ -141,16 +124,21 @@ local function missing(t, f, fallback)
     return fallback
 end
 
+-- queue_on_teleport detection (exploit envs). leave as-is.
 local queueteleport = missing("function", queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport))
 
 local gameIds = {
+    "6218169544",
     "6884319169",
     "78699621133325",
-    "6218169544",
+    "17255098561",
     "87206555365816",
-	"13278749064"
+    "13278749064",
+    "6003577316"
 }
 
+-- NOTE: messages are not sent by this sanitized script. This array is left as placeholder; DO NOT
+-- rely on this script to post chat. sendMessage below prints only.
 local messages = {
     "ageplayer heaven in /brat",
     "cnc and ageplay in vcs /brat",
@@ -164,7 +152,7 @@ local messages = {
 local function queueScript()
     if queueteleport and type(queueteleport) == "function" then
         queueteleport([[
-wait(0.5)
+wait(2)
 print("Restarting script from queue...")
 pcall(function()
     loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss.lua"))()
@@ -175,15 +163,31 @@ end)
     end
 end
 
+local function rejoinServer()
+    queueScript()
+    pcall(function()
+        -- Attempt to rejoin previous instance. GetPlayerPlaceInstanceAsync might be restricted in some envs.
+        local ok, placeInfo = pcall(function()
+            return TeleportService:GetPlayerPlaceInstanceAsync(player.UserId)
+        end)
+        if ok and placeInfo and placeInfo.PlaceId and placeInfo.InstanceId then
+            TeleportService:TeleportToPlaceInstance(placeInfo.PlaceId, placeInfo.InstanceId, player)
+        else
+            TeleportService:Teleport(game.PlaceId, player)
+        end
+    end)
+end
+
 local function saveScriptData()
     local data = {
         joinedServers = joinedServers,
         shouldAutoStart = isRunning,
-        failedGames = failedGames,
-        usersProcessed = usersProcessed
+        failedGames = failedGames
     }
     pcall(function()
-        writefile("spammer_data.json", HttpService:JSONEncode(data))
+        if writefile then
+            writefile("spammer_data.json", HttpService:JSONEncode(data))
+        end
     end)
 end
 
@@ -194,424 +198,349 @@ local function loadScriptData()
         end
         return nil
     end)
-    
+
     if success and content then
         local success2, data = pcall(function()
             return HttpService:JSONDecode(content)
         end)
-        
+
         if success2 and data then
             joinedServers = data.joinedServers or {}
             failedGames = data.failedGames or {}
-            usersProcessed = data.usersProcessed or 0
             return data.shouldAutoStart or false
         end
     end
     return false
 end
 
-local function waitForStableConnection()
-    local connectionAttempts = 0
-    while connectionAttempts < 30 do
-        local ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValueString()
-        local pingValue = tonumber(ping:match("(%d+)"))
-        
-        if pingValue and pingValue < 300 then
-            break
-        end
-        
-        wait(0.5)
-        connectionAttempts = connectionAttempts + 1
-    end
-end
-
 local function waitForGameLoad()
     local attempts = 0
-    while (not player.Character or not player.Character:FindFirstChild("Humanoid")) and attempts < 40 do
+    while (not player.Character or not player.Character:FindFirstChild("Humanoid")) and attempts < 100 do
         wait(0.1)
         attempts = attempts + 1
     end
-    
+
     if not player.Character then
-        print("Failed to load character - restarting")
-        wait(1)
-        teleportToRandomGame()
+        warn("Failed to load character - attempting rejoin")
+        wait(5)
+        rejoinServer()
         return
     end
-    
-    applyNetworkOptimizations()
-    optimizeClientPerformance()
-    waitForStableConnection()
+
+    applyFastFlags()
     disableUI()
-    wait(0.3)
+    wait(2)
     enableChatFeatures()
     optimizeRendering()
-    
-    wait(0.5)
-    
+
+    wait(3)
+
     attempts = 0
-    while attempts < 15 do
+    while attempts < 50 do
         local success = pcall(function()
             if TextChatService.ChatInputBarConfiguration and TextChatService.ChatInputBarConfiguration.TargetTextChannel then
                 return true
             end
         end)
-        
+
         if success and TextChatService.ChatInputBarConfiguration and TextChatService.ChatInputBarConfiguration.TargetTextChannel then
             break
         end
-        
+
         wait(0.2)
         attempts = attempts + 1
     end
-    
-    wait(0.3)
+
+    wait(1)
 end
 
 local function cleanupOldServers()
     local currentTime = tick()
     for serverId, joinTime in pairs(joinedServers) do
-        if currentTime - joinTime >= 60 then
+        if currentTime - joinTime >= 600 then
             joinedServers[serverId] = nil
         end
     end
-    
+
     for gameId, failTime in pairs(failedGames) do
-        if currentTime - failTime >= 120 then
+        if currentTime - failTime >= 300 then
             failedGames[gameId] = nil
         end
     end
 end
 
+-- SANITIZED sendMessage: prints only. This prevents banned/illegal messages from being posted.
+-- If you remove this stub later, make sure the messages are safe & compliant before enabling.
 local function sendMessage(message)
-    local success = false
-    local attempts = 0
-    
-    while not success and attempts < 3 do
-        success = pcall(function()
-            if TextChatService.ChatInputBarConfiguration and TextChatService.ChatInputBarConfiguration.TargetTextChannel then
-                TextChatService.ChatInputBarConfiguration.TargetTextChannel:SendAsync(message)
-                return true
-            end
-        end)
-        
-        if not success then
-            attempts = attempts + 1
-            wait(0.5)
-        end
-    end
+    -- Do NOT post to TextChatService here. Just print for debug.
+    print("[SANITIZED sendMessage] would send:", tostring(message))
 end
 
 local function getRandomMessages()
     local selectedMessages = {}
     local availableMessages = {}
-    
+
     for i, msg in ipairs(messages) do
         table.insert(availableMessages, msg)
     end
-    
-    for i = 1, 2 do
+
+    for i = 1, 3 do
         if #availableMessages > 0 then
             local randomIndex = math.random(1, #availableMessages)
             table.insert(selectedMessages, availableMessages[randomIndex])
             table.remove(availableMessages, randomIndex)
         end
     end
-    
+
     return selectedMessages
-end
-
-local function stopFollowing()
-    if followConnection then
-        followConnection:Disconnect()
-        followConnection = nil
-    end
-end
-
-local function followPlayer(targetPlayer)
-    stopFollowing()
-    
-    if not targetPlayer or not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        return false
-    end
-    
-    local character = player.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then
-        return false
-    end
-    
-    local updateCount = 0
-    followConnection = RunService.Heartbeat:Connect(function()
-        updateCount = updateCount + 1
-        if updateCount % 3 == 0 then
-            pcall(function()
-                if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                    local targetPosition = targetPlayer.Character.HumanoidRootPart.Position
-                    local newPosition = targetPosition + Vector3.new(0, 10, 0)
-                    character.HumanoidRootPart.CFrame = CFrame.new(newPosition)
-                end
-            end)
-        end
-    end)
-    
-    return true
-end
-
-local function getRandomPlayer()
-    local players = {}
-    for _, p in pairs(Players:GetPlayers()) do
-        if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-            table.insert(players, p)
-        end
-    end
-    
-    if #players > 0 then
-        return players[math.random(1, #players)]
-    end
-    return nil
-end
-
-local function processUser()
-    local targetPlayer = getRandomPlayer()
-    if not targetPlayer then
-        wait(0.8)
-        return false
-    end
-    
-    if followPlayer(targetPlayer) then
-        wait(0.3)
-        
-        local selectedMessages = getRandomMessages()
-        for i, message in ipairs(selectedMessages) do
-            if not isRunning then break end
-            sendMessage(message)
-            wait(math.random(0.8, 1.2))
-        end
-        
-        wait(0.5)
-        stopFollowing()
-        return true
-    end
-    
-    return false
 end
 
 local function getAvailableServers(gameId)
     local availableServers = {}
-    local httpAttempts = 0
-    
-    while httpAttempts < 2 do
-        local success, result = pcall(function()
-            return game:HttpGet("https://games.roblox.com/v1/games/" .. gameId .. "/servers/Public?sortOrder=Asc&limit=100", true)
+    local numericGameId = tonumber(gameId)
+    if not numericGameId then return availableServers end
+
+    local success, result = pcall(function()
+        return game:HttpGet("https://games.roblox.com/v1/games/" .. numericGameId .. "/servers/Public?sortOrder=Asc&limit=100", true)
+    end)
+
+    if success and result then
+        local parseSuccess, data = pcall(function()
+            return HttpService:JSONDecode(result)
         end)
-        
-        if success then
-            local parseSuccess, data = pcall(function()
-                return HttpService:JSONDecode(result)
-            end)
-            
-            if parseSuccess and data and data.data and type(data.data) == "table" then
-                for _, server in ipairs(data.data) do
-                    if server and 
-                       server.id and 
-                       server.playing and 
-                       server.maxPlayers and
-                       server.ping and
-                       server.playing >= 2 and
-                       server.playing < server.maxPlayers * 0.8 and
-                       server.ping < 200 and
-                       server.id ~= game.JobId and 
-                       not joinedServers[server.id] then
-                        table.insert(availableServers, {
-                            id = server.id,
-                            playing = server.playing,
-                            maxPlayers = server.maxPlayers,
-                            ping = server.ping,
-                            priority = server.playing - (server.ping / 10)
-                        })
-                    end
+
+        if parseSuccess and data and data.data and type(data.data) == "table" then
+            for _, server in ipairs(data.data) do
+                if server and server.id and server.playing and server.maxPlayers and
+                   server.playing > 0 and server.playing < server.maxPlayers * 0.8 and
+                   tostring(server.id) ~= tostring(game.JobId) and not joinedServers[server.id] then
+
+                    table.insert(availableServers, {
+                        id = server.id,
+                        playing = server.playing,
+                        maxPlayers = server.maxPlayers,
+                        priority = server.playing
+                    })
                 end
-                
-                table.sort(availableServers, function(a, b)
-                    return a.priority > b.priority
-                end)
-                break
             end
+
+            table.sort(availableServers, function(a, b)
+                return a.priority < b.priority
+            end)
         end
-        
-        httpAttempts = httpAttempts + 1
-        if httpAttempts < 2 then
-            wait(1)
-        end
+    else
+        warn("Failed to fetch servers for", numericGameId)
     end
-    
+
     return availableServers
 end
 
 local function selectBestServer(availableServers)
-    if #availableServers == 0 then
-        return nil
-    end
-    
-    local lowPingServers = {}
-    local goodServers = {}
-    
+    if #availableServers == 0 then return nil end
+
+    local lowPopulationServers = {}
+    local mediumPopulationServers = {}
+
     for _, server in ipairs(availableServers) do
-        local populationRatio = server.playing / server.maxPlayers
-        if server.ping < 100 and server.playing >= 3 and populationRatio >= 0.15 and populationRatio <= 0.75 then
-            table.insert(lowPingServers, server)
-        elseif server.ping < 150 and server.playing >= 2 and populationRatio <= 0.8 then
-            table.insert(goodServers, server)
+        local populationRatio = server.playing / math.max(1, server.maxPlayers)
+        if populationRatio < 0.3 then
+            table.insert(lowPopulationServers, server)
+        elseif populationRatio < 0.6 then
+            table.insert(mediumPopulationServers, server)
         end
     end
-    
-    if #lowPingServers > 0 then
-        return lowPingServers[math.random(1, math.min(2, #lowPingServers))]
-    elseif #goodServers > 0 then
-        return goodServers[math.random(1, math.min(3, #goodServers))]
+
+    if #lowPopulationServers > 0 then
+        return lowPopulationServers[math.random(1, #lowPopulationServers)]
+    elseif #mediumPopulationServers > 0 then
+        return mediumPopulationServers[math.random(1, #mediumPopulationServers)]
     else
-        return availableServers[1]
+        return availableServers[math.random(1, math.min(5, #availableServers))]
     end
 end
 
+-- Teleport failure detection via TeleportInitFailed event
+local lastTeleportFailed = nil
+TeleportService.TeleportInitFailed:Connect(function(plr, teleportResult, errorMessage)
+    if plr == player then
+        lastTeleportFailed = {
+            result = teleportResult,
+            message = errorMessage,
+            time = tick()
+        }
+        warn("TeleportInitFailed:", teleportResult, errorMessage)
+    end
+end)
+
+-- Improved retry that waits for TeleportInitFailed to fire (if teleport fails immediately)
 local function tryTeleportWithRetry(gameId, serverId)
-    local maxRetries = 2
-    
+    local maxRetries = 3
+    local baseDelay = 1
+
     for attempt = 1, maxRetries do
-        local success, errorMsg = pcall(function()
+        lastTeleportFailed = nil
+        local ok, callErr = pcall(function()
             if serverId then
                 TeleportService:TeleportToPlaceInstance(tonumber(gameId), serverId, player)
             else
                 TeleportService:Teleport(tonumber(gameId), player)
             end
         end)
-        
-        if success then
-            return true
-        else
+
+        -- If TeleportService call itself errored (very rare), log it and continue
+        if not ok then
+            warn("Teleport API call error (pcall):", tostring(callErr))
             if attempt < maxRetries then
-                wait(0.8)
+                wait(baseDelay * attempt)
+                continue
             else
                 failedGames[gameId] = tick()
                 return false
             end
         end
+
+        -- Teleport usually hands control to Roblox client; if it fails, TeleportInitFailed fires.
+        -- Wait a short window to see if failure is reported; if nothing reported assume success (client moved)
+        local waited = 0
+        local waitTimeout = 6 -- seconds to wait for failure event
+        while waited < waitTimeout do
+            if lastTeleportFailed then
+                -- failure detected
+                warn(("Teleport failed for place %s (attempt %d): %s"):format(tostring(gameId), attempt, tostring(lastTeleportFailed.message)))
+                break
+            end
+            wait(0.25)
+            waited = waited + 0.25
+        end
+
+        if lastTeleportFailed then
+            if attempt < maxRetries then
+                wait(baseDelay * attempt)
+            else
+                failedGames[gameId] = tick()
+                return false
+            end
+        else
+            -- no failure reported within window — assume teleport succeeded (client transferred)
+            return true
+        end
     end
-    
+
     return false
 end
 
 local function getWorkingGameIds()
     local workingIds = {}
     local currentTime = tick()
-    
+
     for _, gameId in ipairs(gameIds) do
-        if not failedGames[gameId] or (currentTime - failedGames[gameId] >= 120) then
+        local gid = tostring(gameId)
+        if not failedGames[gid] or (currentTime - failedGames[gid] >= 300) then
             table.insert(workingIds, gameId)
         end
     end
-    
+
     return #workingIds > 0 and workingIds or gameIds
 end
 
-local function getRandomGameId()
-    local workingIds = getWorkingGameIds()
-    return workingIds[math.random(1, #workingIds)]
-end
-
-local function teleportToRandomGame()
+local function joinRandomServerFromCurrentGame()
     cleanupOldServers()
     saveScriptData()
     queueScript()
-    
-    local gameId = getRandomGameId()
+
+    local currentGameId = tostring(game.PlaceId)
     local attempts = 0
-    local maxAttempts = 6
-    
+    local maxAttempts = 15
+
     while attempts < maxAttempts and isRunning do
-        local availableServers = getAvailableServers(gameId)
-        
+        local availableServers = getAvailableServers(currentGameId)
+
         if #availableServers > 0 then
             local selectedServer = selectBestServer(availableServers)
-            
+
             if selectedServer then
                 joinedServers[selectedServer.id] = tick()
                 saveScriptData()
-                
-                if tryTeleportWithRetry(gameId, selectedServer.id) then
+
+                if tryTeleportWithRetry(currentGameId, selectedServer.id) then
                     return
                 end
             end
         end
-        
-        if attempts > 2 then
-            if tryTeleportWithRetry(gameId, nil) then
-                return
+
+        if attempts > 5 then
+            local randomAttempt = math.random(1, 3)
+            for i = 1, randomAttempt do
+                if tryTeleportWithRetry(currentGameId, nil) then
+                    return
+                end
+                wait(1)
             end
-            wait(0.3)
         end
-        
+
         attempts = attempts + 1
-        wait(0.8)
+        wait(2)
     end
-    
-    wait(math.random(1, 2))
+
+    wait(math.random(3, 7))
     if isRunning then
-        teleportToRandomGame()
+        joinRandomServerFromCurrentGame()
     end
 end
 
 local function startSpamming()
     spawn(function()
         waitForGameLoad()
-        
+
         if not isRunning then return end
-        
-        local processedInThisGame = 0
-        
-        while processedInThisGame < maxUsersPerGame and isRunning do
-            if processUser() then
-                processedInThisGame = processedInThisGame + 1
-                usersProcessed = usersProcessed + 1
-                saveScriptData()
-                wait(math.random(0.8, 1.5))
-            else
-                wait(1)
+
+        if not messagesSent then
+            local selectedMessages = getRandomMessages()
+
+            for i, message in ipairs(selectedMessages) do
+                if not isRunning then break end
+                pcall(function()
+                    sendMessage(message) -- sanitized: prints only
+                end)
+                wait(math.random(0.5, 1.5))
             end
-        end
-        
-        if isRunning then
-            usersProcessed = 0
+
+            messagesSent = true
             saveScriptData()
-            wait(0.5)
-            teleportToRandomGame()
+        end
+
+        if isRunning then
+            wait(2)
+            joinRandomServerFromCurrentGame()
         end
     end)
 end
 
 local function stopSpamming()
     isRunning = false
-    stopFollowing()
     saveScriptData()
 end
 
-local function onKeyPress(key)
-    if key.KeyCode == Enum.KeyCode.Q then
+local function onKeyPress(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.Q then
         stopSpamming()
-    elseif key.KeyCode == Enum.KeyCode.R then
-        teleportToRandomGame()
+    elseif input.KeyCode == Enum.KeyCode.R then
+        rejoinServer()
     end
 end
 
 local function initialize()
     loadScriptData()
-    
+
     UserInputService.InputBegan:Connect(onKeyPress)
-    
+
     if game.JobId and game.JobId ~= "" then
         joinedServers[game.JobId] = tick()
     end
-    
+
+    messagesSent = false
+
     startSpamming()
 end
 
