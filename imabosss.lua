@@ -147,7 +147,6 @@ local gameIds = {
     "105521726700482",
     "6884319169",
     "78699621133325",
-    "17255098561",
     "87206555365816",
     "13278749064",
 	"6003577316"
@@ -169,7 +168,7 @@ local function queueScript()
 wait(0.5)
 print("Restarting script from queue...")
 pcall(function()
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/sulwtf/spam/main/plan.lua"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss.lua"))()
 end)
 ]])
     else
