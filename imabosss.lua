@@ -16,7 +16,6 @@ local function queueScript()
     end
 end
 
--- Queue on initial load
 queueScript()
 
 -- Height above player
@@ -36,8 +35,9 @@ local customMessages = {
 -- Delay between messages in seconds
 local messageDelay = 1
 
--- Forward declaration for serverHop (needed inside sendMessage)
+-- Forward declaration for serverHop
 local serverHop
+local stopMessages = false
 
 -- Function to send message via TextChatService
 local function sendMessage(message)
@@ -47,17 +47,19 @@ local function sendMessage(message)
             channel:SendAsync(message)
         end)
         if not success then
-            -- If cooldown error, hop to next server immediately
             if tostring(err):find("wait before sending another message") then
                 print("Message cooldown hit. Server hopping...")
-                queueScript() -- ensure script auto-runs after teleport
-                serverHop()
+                stopMessages = true -- stop message loop immediately
+                task.spawn(function()
+                    queueScript() -- ensure script runs after teleport
+                    serverHop()
+                end)
             end
         end
     end
 end
 
--- Teleport above a player for hoverHeight seconds
+-- Teleport above a player
 local function teleportAbovePlayer(player)
     if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = player.Character.HumanoidRootPart
@@ -66,20 +68,20 @@ local function teleportAbovePlayer(player)
             local root = myChar.HumanoidRootPart
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
-            task.wait(2) -- hover 2 seconds
+            task.wait(2)
             root.Anchored = false
         end
     end
 end
 
--- Loop through all players and hover above them
+-- Loop through all players
 local function visitAllPlayers()
     for _, player in ipairs(Players:GetPlayers()) do
         teleportAbovePlayer(player)
     end
 end
 
--- Server hop function: join bigger servers first
+-- Server hop function
 serverHop = function()
     local success, data = pcall(function()
         return HttpService:JSONDecode(
@@ -93,7 +95,7 @@ serverHop = function()
         end)
         for _, server in ipairs(data.data) do
             if server.playing < server.maxPlayers then
-                queueScript() -- ensure script runs after teleport
+                queueScript() -- queue after teleport
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
                 return
             end
@@ -106,16 +108,19 @@ end
 -- Run message loop
 task.spawn(function()
     while true do
+        if stopMessages then break end
         for _, msg in ipairs(customMessages) do
+            if stopMessages then break end
             sendMessage(msg)
             task.wait(messageDelay)
         end
     end
 end)
 
--- Main loop: teleport above players and hop servers
+-- Main loop
 while true do
     visitAllPlayers()
+    if stopMessages then break end
     serverHop()
     task.wait(2)
 end
