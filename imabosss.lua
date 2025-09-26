@@ -30,50 +30,7 @@ local messageDelay = 1
 local serverHop
 local isRunning = true
 
--- Function to send message and detect cooldown
-local function sendMessage(message)
-    local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
-    if channel then
-        pcall(function()
-            channel:SendAsync(message)
-        end)
-
-        -- Check for system message immediately
-        task.wait(0.2)
-        for _, msg in ipairs(channel:GetChildren()) do
-            if msg:IsA("Message") and msg.Text:lower():find("you must wait before sending another message") then
-                print("Message cooldown detected. Server hopping...")
-                isRunning = false
-                serverHop()
-                return true -- signal that cooldown happened
-            end
-        end
-    end
-    return false
-end
-
--- Teleport above a player
-local function teleportAbovePlayer(player)
-    if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-        local targetHRP = player.Character.HumanoidRootPart
-        local myChar = LocalPlayer.Character
-        if myChar and myChar:FindFirstChild("HumanoidRootPart") then
-            local root = myChar.HumanoidRootPart
-            root.Anchored = true
-            root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
-            task.wait(2)
-            root.Anchored = false
-        end
-    end
-end
-
-local function visitAllPlayers()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if not isRunning then break end
-        teleportAbovePlayer(player)
-    end
-end
-
+-- Server hop function: join bigger servers first
 serverHop = function()
     local success, data = pcall(function()
         return HttpService:JSONDecode(
@@ -94,13 +51,61 @@ serverHop = function()
     end
 end
 
+-- Function to send message instantly checking for cooldown
+local function sendMessage(message)
+    local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+    if not channel then return end
+
+    -- Spawn a small task that constantly checks for the cooldown system message
+    local listener = task.spawn(function()
+        while isRunning do
+            for _, msgObj in ipairs(channel:GetChildren()) do
+                if msgObj:IsA("Message") and msgObj.Text:lower():find("you must wait before sending another message") then
+                    print("Cooldown detected. Server hopping instantly...")
+                    isRunning = false
+                    serverHop()
+                    return
+                end
+            end
+            task.wait(0.01) -- check every 0.01s for instant response
+        end
+    end)
+
+    -- Send the message
+    pcall(function()
+        channel:SendAsync(message)
+    end)
+end
+
+-- Teleport above a player
+local function teleportAbovePlayer(player)
+    if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        local targetHRP = player.Character.HumanoidRootPart
+        local myChar = LocalPlayer.Character
+        if myChar and myChar:FindFirstChild("HumanoidRootPart") then
+            local root = myChar.HumanoidRootPart
+            root.Anchored = true
+            root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
+            task.wait(2)
+            root.Anchored = false
+        end
+    end
+end
+
+-- Loop through all players and hover above them
+local function visitAllPlayers()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if not isRunning then break end
+        teleportAbovePlayer(player)
+    end
+end
+
 -- Run message loop
 task.spawn(function()
     while isRunning do
         for _, msg in ipairs(customMessages) do
             if not isRunning then break end
-            local cooldownDetected = sendMessage(msg)
-            if cooldownDetected then break end -- immediately stop sending further messages
+            sendMessage(msg)
             task.wait(messageDelay)
         end
     end
