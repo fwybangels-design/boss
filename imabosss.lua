@@ -16,10 +16,7 @@ if queueTeleport then
     ]])
 end
 
--- Height above player
 local hoverHeight = 5
-
--- Your custom messages
 local customMessages = {
     "ageplayer heaven in /brat",
     "cnc and ageplay in vcs /brat",
@@ -29,17 +26,11 @@ local customMessages = {
     "camgir1s in /brat jvc",
     "egirls in /brat join"
 }
-
--- Delay between messages in seconds
 local messageDelay = 1
-
--- Forward declaration of serverHop to use inside sendMessage
 local serverHop
-
--- Flag to control loops
 local isRunning = true
 
--- Function to send message via TextChatService and detect cooldown
+-- Function to send message and detect cooldown
 local function sendMessage(message)
     local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
@@ -47,20 +38,21 @@ local function sendMessage(message)
             channel:SendAsync(message)
         end)
 
-        -- Check for system messages immediately after sending
-        task.wait(0.2) -- allow system message to appear
+        -- Check for system message immediately
+        task.wait(0.2)
         for _, msg in ipairs(channel:GetChildren()) do
             if msg:IsA("Message") and msg.Text:lower():find("you must wait before sending another message") then
                 print("Message cooldown detected. Server hopping...")
                 isRunning = false
                 serverHop()
-                return
+                return true -- signal that cooldown happened
             end
         end
     end
+    return false
 end
 
--- Teleport above a player for hoverHeight seconds
+-- Teleport above a player
 local function teleportAbovePlayer(player)
     if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = player.Character.HumanoidRootPart
@@ -69,13 +61,12 @@ local function teleportAbovePlayer(player)
             local root = myChar.HumanoidRootPart
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
-            task.wait(2) -- hover 2 seconds
+            task.wait(2)
             root.Anchored = false
         end
     end
 end
 
--- Loop through all players and hover above them
 local function visitAllPlayers()
     for _, player in ipairs(Players:GetPlayers()) do
         if not isRunning then break end
@@ -83,7 +74,6 @@ local function visitAllPlayers()
     end
 end
 
--- Server hop function: join bigger servers first
 serverHop = function()
     local success, data = pcall(function()
         return HttpService:JSONDecode(
@@ -92,9 +82,7 @@ serverHop = function()
     end)
 
     if success and data and data.data then
-        table.sort(data.data, function(a, b)
-            return a.playing > b.playing
-        end)
+        table.sort(data.data, function(a, b) return a.playing > b.playing end)
         for _, server in ipairs(data.data) do
             if server.playing < server.maxPlayers then
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
@@ -111,7 +99,8 @@ task.spawn(function()
     while isRunning do
         for _, msg in ipairs(customMessages) do
             if not isRunning then break end
-            sendMessage(msg)
+            local cooldownDetected = sendMessage(msg)
+            if cooldownDetected then break end -- immediately stop sending further messages
             task.wait(messageDelay)
         end
     end
