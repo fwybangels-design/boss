@@ -8,10 +8,6 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 
--- Forward declaration for serverHop
-local serverHop
-local isRunning = true
-
 -- Queue script to run again after teleport
 local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport)
 if queueTeleport then
@@ -37,9 +33,14 @@ local customMessages = {
 -- Delay between messages in seconds
 local messageDelay = 1
 
+-- Forward declaration of serverHop to use inside sendMessage
+local serverHop
+
+-- Flag to control loops
+local isRunning = true
+
 -- Function to send message via TextChatService
 local function sendMessage(message)
-    if not isRunning then return end
     local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
         local success, err = pcall(function()
@@ -48,7 +49,7 @@ local function sendMessage(message)
         if not success then
             if tostring(err):lower():find("you must wait before sending another message") then
                 print("Message cooldown hit. Server hopping...")
-                isRunning = false -- stop all loops immediately
+                isRunning = false -- stop loops immediately
                 serverHop()
             end
         end
@@ -73,6 +74,7 @@ end
 -- Loop through all players and hover above them
 local function visitAllPlayers()
     for _, player in ipairs(Players:GetPlayers()) do
+        if not isRunning then break end
         teleportAbovePlayer(player)
     end
 end
@@ -111,7 +113,7 @@ task.spawn(function()
     end
 end)
 
--- Main loop: teleport above players and hop servers
+-- Main loop: teleport above players
 while isRunning do
     visitAllPlayers()
     task.wait(2)
