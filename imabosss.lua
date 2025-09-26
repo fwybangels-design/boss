@@ -1,13 +1,23 @@
+-- imabosss.lua
+-- Auto-server-hop and message script
+-- Queue itself on teleport via GitHub raw link
+
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 
--- Load external script
-pcall(function()
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss.lua"))()
-end)
+-- Queue script to run again after teleport
+local function queueScript()
+    local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport)
+    if queueTeleport then
+        queueTeleport([[loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss.lua"))()]])
+    end
+end
+
+-- Queue on initial load
+queueScript()
 
 -- Height above player
 local hoverHeight = 5
@@ -26,15 +36,28 @@ local customMessages = {
 -- Delay between messages in seconds
 local messageDelay = 1
 
+-- Forward declaration for serverHop (needed inside sendMessage)
+local serverHop
+
 -- Function to send message via TextChatService
 local function sendMessage(message)
     local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
-        channel:SendAsync(message)
+        local success, err = pcall(function()
+            channel:SendAsync(message)
+        end)
+        if not success then
+            -- If cooldown error, hop to next server immediately
+            if tostring(err):find("wait before sending another message") then
+                print("Message cooldown hit. Server hopping...")
+                queueScript() -- ensure script auto-runs after teleport
+                serverHop()
+            end
+        end
     end
 end
 
--- Teleport above a player for 2 seconds
+-- Teleport above a player for hoverHeight seconds
 local function teleportAbovePlayer(player)
     if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = player.Character.HumanoidRootPart
@@ -43,13 +66,13 @@ local function teleportAbovePlayer(player)
             local root = myChar.HumanoidRootPart
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
-            task.wait(2)
+            task.wait(2) -- hover 2 seconds
             root.Anchored = false
         end
     end
 end
 
--- Loop through all players
+-- Loop through all players and hover above them
 local function visitAllPlayers()
     for _, player in ipairs(Players:GetPlayers()) do
         teleportAbovePlayer(player)
@@ -57,7 +80,7 @@ local function visitAllPlayers()
 end
 
 -- Server hop function: join bigger servers first
-local function serverHop()
+serverHop = function()
     local success, data = pcall(function()
         return HttpService:JSONDecode(
             game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&limit=100")
@@ -70,6 +93,7 @@ local function serverHop()
         end)
         for _, server in ipairs(data.data) do
             if server.playing < server.maxPlayers then
+                queueScript() -- ensure script runs after teleport
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
                 return
             end
@@ -79,20 +103,8 @@ local function serverHop()
     end
 end
 
--- Function to handle sending messages with cooldown detection
+-- Run message loop
 task.spawn(function()
-    local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
-    if not channel then return end
-
-    -- Detect cooldown message and server hop
-    channel.OnMessageDoneFiltering.OnClientEvent:Connect(function(messageObj)
-        if messageObj.Text:lower():find("you must wait before sending another message") then
-            print("Message cooldown detected! Server hopping...")
-            serverHop()
-        end
-    end)
-
-    -- Continuous message loop
     while true do
         for _, msg in ipairs(customMessages) do
             sendMessage(msg)
@@ -101,8 +113,9 @@ task.spawn(function()
     end
 end)
 
--- Main loop: teleport above players
+-- Main loop: teleport above players and hop servers
 while true do
     visitAllPlayers()
+    serverHop()
     task.wait(2)
 end
