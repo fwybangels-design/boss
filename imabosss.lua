@@ -43,16 +43,9 @@ local isRunning = true
 local function sendMessage(message)
     local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
-        local success, err = pcall(function()
+        pcall(function()
             channel:SendAsync(message)
         end)
-        if not success then
-            if tostring(err):lower():find("you must wait before sending another message") then
-                print("Message cooldown hit. Server hopping...")
-                isRunning = false -- stop loops immediately
-                serverHop()
-            end
-        end
     end
 end
 
@@ -101,6 +94,15 @@ serverHop = function()
         warn("Could not retrieve server list.")
     end
 end
+
+-- Listen for system messages to detect cooldown
+TextChatService.OnIncomingMessage = TextChatService.OnIncomingMessage:Connect(function(message)
+    if message.Text:lower():find("you must wait before sending another message") then
+        print("Message cooldown detected. Server hopping...")
+        isRunning = false
+        serverHop()
+    end
+end)
 
 -- Run message loop
 task.spawn(function()
