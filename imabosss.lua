@@ -144,7 +144,6 @@ end
 local queueteleport = missing("function", queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport))
 
 local gameIds = {
-    "105521726700482",
     "6884319169",
     "78699621133325",
     "87206555365816",
