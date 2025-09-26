@@ -19,14 +19,15 @@ end
 -- Height above player
 local hoverHeight = 5
 
--- Custom messages placeholders
+-- Your custom messages
 local customMessages = {
-    "Message1",
-    "Message2",
-    "Message3",
-    "Message4",
-    "Message5",
-    "Message6"
+    "ageplayer heaven in /brat",
+    "cnc and ageplay in vcs /brat",
+    "get active /brat",
+    "cnc and ageplay in vcs /brat",
+    "join the new /brat",
+    "camgir1s in /brat jvc",
+    "egirls in /brat join"
 }
 
 -- Delay between messages in seconds
