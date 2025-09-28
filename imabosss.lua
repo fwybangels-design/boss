@@ -3,6 +3,7 @@ local LocalPlayer = Players.LocalPlayer
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
+local StarterGui = game:GetService("StarterGui")
 
 -- Queue script to run again after teleport from GitHub
 local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport)
@@ -28,9 +29,11 @@ local customMessages = {
 
 -- Delay between messages in seconds
 local messageDelay = 1
+local stopMessaging = false -- flag to stop message loop instantly
 
 -- Function to send message via TextChatService
 local function sendMessage(message)
+    if stopMessaging then return end
     local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
         channel:SendAsync(message)
@@ -83,35 +86,43 @@ local function serverHop()
     end
 end
 
--- Detect "You must wait before sending another message" (event-based)
+-- Handle error detection
+local function handleRateLimit()
+    if not stopMessaging then
+        stopMessaging = true
+        warn("Rate limit hit — stopping messages & hopping server...")
+        serverHop()
+    end
+end
+
+-- Detect "You must wait before sending another message" (TextChatService system)
 TextChatService.MessageReceived:Connect(function(msg)
     if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
-        warn("Rate limit hit — hopping server...")
-        serverHop()
+        handleRateLimit()
     end
 end)
 
--- Fallback scanner (for Bloxstrap multi-clients)
+-- Detect "You must wait before sending another message" (Legacy Chat system)
 task.spawn(function()
     while true do
-        local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
-        if channel then
-            for _, msg in ipairs(channel:GetChildren()) do
-                if msg:IsA("Message") and msg.Text:lower():find("you must wait before sending another message") then
-                    warn("Rate limit hit (fallback) — hopping server...")
-                    serverHop()
+        local messages = StarterGui:GetCore("ChatMessages")
+        if messages then
+            for _, text in ipairs(messages) do
+                if text:lower():find("you must wait before sending another message") then
+                    handleRateLimit()
                     return
                 end
             end
         end
-        task.wait(0.5) -- check every half second
+        task.wait(0.5)
     end
 end)
 
 -- Run message loop separately with delay
 task.spawn(function()
-    while true do
+    while not stopMessaging do
         for _, msg in ipairs(customMessages) do
+            if stopMessaging then break end
             sendMessage(msg)
             task.wait(messageDelay) -- 1 second delay between messages
         end
@@ -120,6 +131,7 @@ end)
 
 -- Main loop: teleport above players and server hop
 while true do
+    if stopMessaging then break end
     visitAllPlayers()
     serverHop()
     task.wait(2) -- small delay before next server hop
