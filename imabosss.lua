@@ -4,7 +4,7 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 
--- Queue script to run again after teleport from GitHub
+-- Queue script to run again after teleport
 local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport)
 if queueTeleport then
     queueTeleport([[
@@ -15,7 +15,7 @@ end
 -- Height above player
 local hoverHeight = 5
 
--- Your custom messages
+-- Messages
 local customMessages = {
     "ageplayer heaven in /brat",
     "cnc and ageplay in vcs /brat",
@@ -26,10 +26,10 @@ local customMessages = {
     "egirls in /brat join"
 }
 
--- Delay between messages in seconds
+-- Delay
 local messageDelay = 1
+local keepMessaging = true -- control flag
 
--- Function to send message via TextChatService
 local function sendMessage(message)
     local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
@@ -37,7 +37,6 @@ local function sendMessage(message)
     end
 end
 
--- Teleport above a player for 2 seconds
 local function teleportAbovePlayer(player)
     if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = player.Character.HumanoidRootPart
@@ -46,21 +45,22 @@ local function teleportAbovePlayer(player)
             local root = myChar.HumanoidRootPart
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
-            task.wait(2) -- hover 2 seconds above player
+            task.wait(2)
             root.Anchored = false
         end
     end
 end
 
--- Loop through all players
 local function visitAllPlayers()
     for _, player in ipairs(Players:GetPlayers()) do
         teleportAbovePlayer(player)
     end
 end
 
--- Server hop function: pick random available server
 local function serverHop()
+    keepMessaging = false -- stop message loop instantly
+    warn("Rate limit hit — hopping server...")
+
     local success, data = pcall(function()
         return HttpService:JSONDecode(
             game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&limit=100")
@@ -85,20 +85,20 @@ local function serverHop()
     end
 end
 
--- Unified cooldown/error detection
+-- Cooldown detection
 local function detectCooldownAndHop()
-    warn("Rate limit hit — hopping server...")
-    serverHop()
+    if keepMessaging then
+        keepMessaging = false
+        serverHop()
+    end
 end
 
--- New TextChatService messages
 TextChatService.MessageReceived:Connect(function(msg)
-    if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
+    if msg and msg.Text and msg.Text:find("You must wait before sending another message") then
         detectCooldownAndHop()
     end
 end)
 
--- Legacy Chat UI fallback (system message appears here)
 LocalPlayer.PlayerGui.ChildAdded:Connect(function(child)
     if child:IsA("ScreenGui") and child.Name == "Chat" then
         child.DescendantAdded:Connect(function(desc)
@@ -109,19 +109,21 @@ LocalPlayer.PlayerGui.ChildAdded:Connect(function(child)
     end
 end)
 
--- Run message loop separately with delay
+-- Message loop
 task.spawn(function()
     while true do
+        if not keepMessaging then break end
         for _, msg in ipairs(customMessages) do
+            if not keepMessaging then break end
             sendMessage(msg)
-            task.wait(messageDelay) -- 1 second delay between messages
+            task.wait(messageDelay)
         end
     end
 end)
 
--- Main loop: teleport above players and server hop
+-- Main loop
 while true do
+    if not keepMessaging then break end
     visitAllPlayers()
-    serverHop()
-    task.wait(2) -- small delay before next server hop
+    task.wait(2)
 end
