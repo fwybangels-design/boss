@@ -83,11 +83,28 @@ local function serverHop()
     end
 end
 
--- Detect "You must wait before sending another message"
+-- Detect "You must wait before sending another message" (event-based)
 TextChatService.MessageReceived:Connect(function(msg)
     if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
         warn("Rate limit hit — hopping server...")
         serverHop()
+    end
+end)
+
+-- Fallback scanner (for Bloxstrap multi-clients)
+task.spawn(function()
+    while true do
+        local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+        if channel then
+            for _, msg in ipairs(channel:GetChildren()) do
+                if msg:IsA("Message") and msg.Text:lower():find("you must wait before sending another message") then
+                    warn("Rate limit hit (fallback) — hopping server...")
+                    serverHop()
+                    return
+                end
+            end
+        end
+        task.wait(0.5) -- check every half second
     end
 end)
 
