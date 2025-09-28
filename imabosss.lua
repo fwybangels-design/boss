@@ -12,9 +12,10 @@ if queueTeleport then
     ]])
 end
 
--- Flags for loops
-local keepMessaging = true -- controls message loop
-local keepVisiting = true -- controls player visit loop
+-- Flags
+local keepMessaging = true
+local keepVisiting = true
+local hasHoppedRecently = false -- prevent teleport spam
 
 -- Height above player
 local hoverHeight = 5
@@ -33,11 +34,13 @@ local customMessages = {
 -- Delay
 local messageDelay = 1
 
--- Send a chat message
+-- Send a chat message (waits for channel if needed)
 local function sendMessage(message)
-    local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+    local channel = TextChatService.TextChannels:WaitForChild("RBXGeneral", 10)
     if channel then
-        channel:SendAsync(message)
+        pcall(function()
+            channel:SendAsync(message)
+        end)
     end
 end
 
@@ -51,12 +54,12 @@ local function teleportAbovePlayer(player)
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
             task.wait(2)
-            root.Anchored = false -- ensure unanchored even if interrupted
+            root.Anchored = false
         end
     end
 end
 
--- Visit all other players; hop if alone
+-- Visit all players; hop if alone
 local function visitAllPlayers()
     local others = {}
     for _, player in ipairs(Players:GetPlayers()) do
@@ -65,18 +68,18 @@ local function visitAllPlayers()
             teleportAbovePlayer(player)
         end
     end
-    if #others == 0 then
+    if #others == 0 and not hasHoppedRecently then
+        hasHoppedRecently = true
         warn("No other players found, hopping server...")
         serverHop()
     end
 end
 
--- Server hop function
+-- Server hop
 function serverHop()
-    keepMessaging = false -- stop message loop
+    keepMessaging = false
     warn("Hopping server...")
 
-    -- Ensure player is unanchored
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
         LocalPlayer.Character.HumanoidRootPart.Anchored = false
     end
@@ -98,29 +101,29 @@ function serverHop()
         if #available > 0 then
             local choice = available[math.random(1, #available)]
             TeleportService:TeleportToPlaceInstance(game.PlaceId, choice.id)
-            return
         end
     else
         warn("Could not retrieve server list.")
     end
 end
 
--- Detect chat cooldown and hop
+-- Detect cooldown and hop
 local function detectCooldownAndHop()
-    if keepMessaging then
+    if keepMessaging and not hasHoppedRecently then
+        hasHoppedRecently = true
         keepMessaging = false
         serverHop()
     end
 end
 
--- Chat listener for cooldown
+-- Chat listener
 TextChatService.MessageReceived:Connect(function(msg)
     if msg and msg.Text and msg.Text:find("You must wait before sending another message") then
         detectCooldownAndHop()
     end
 end)
 
--- GUI listener for cooldown
+-- GUI listener
 LocalPlayer.PlayerGui.ChildAdded:Connect(function(child)
     if child:IsA("ScreenGui") and child.Name == "Chat" then
         child.DescendantAdded:Connect(function(desc)
@@ -133,12 +136,17 @@ end)
 
 -- Message loop
 task.spawn(function()
-    while keepMessaging do
-        for _, msg in ipairs(customMessages) do
-            if not keepMessaging then break end
-            sendMessage(msg)
-            task.wait(messageDelay)
+    while true do
+        if not keepMessaging then
+            task.wait(1)
+        else
+            for _, msg in ipairs(customMessages) do
+                if not keepMessaging then break end
+                sendMessage(msg)
+                task.wait(messageDelay)
+            end
         end
+        task.wait(1)
     end
 end)
 
