@@ -48,7 +48,7 @@ local function teleportAbovePlayer(player)
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
             task.wait(2)
-            root.Anchored = false
+            root.Anchored = false -- ensure unanchored even if something interrupts
         end
     end
 end
@@ -60,8 +60,13 @@ local function visitAllPlayers()
 end
 
 local function serverHop()
-    keepMessaging = false -- stop message loop instantly
+    -- Only stop messaging, not movement
+    keepMessaging = false 
     warn("Rate limit hit — hopping server...")
+
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        LocalPlayer.Character.HumanoidRootPart.Anchored = false -- unanchor before teleport
+    end
 
     local success, data = pcall(function()
         return HttpService:JSONDecode(
@@ -125,7 +130,6 @@ end)
 
 -- Main loop
 while true do
-    if not keepMessaging then break end
-    visitAllPlayers()
+    visitAllPlayers() -- always keep visiting players
     task.wait(2)
 end
