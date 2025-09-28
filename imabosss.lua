@@ -4,18 +4,13 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 
--- Queue script to run again after teleport
+-- Queue script to run again after teleport from GitHub
 local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport)
 if queueTeleport then
     queueTeleport([[
         loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss.lua"))()
     ]])
 end
-
--- Flags
-local keepMessaging = true
-local keepVisiting = true
-local hasHoppedRecently = false -- prevent teleport spam
 
 -- Height above player
 local hoverHeight = 5
@@ -31,11 +26,15 @@ local customMessages = {
     "egirls in /brat join"
 }
 
--- Delay
+-- Delay between messages
 local messageDelay = 1
 
--- Send a chat message (waits for channel if needed)
+-- Global stop flag
+local stopEverything = false
+
+-- Send a message safely
 local function sendMessage(message)
+    if stopEverything then return end
     local channel = TextChatService.TextChannels:WaitForChild("RBXGeneral", 10)
     if channel then
         pcall(function()
@@ -44,8 +43,9 @@ local function sendMessage(message)
     end
 end
 
--- Teleport above a target player
+-- Teleport above a player
 local function teleportAbovePlayer(player)
+    if stopEverything then return end
     if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = player.Character.HumanoidRootPart
         local myChar = LocalPlayer.Character
@@ -59,27 +59,16 @@ local function teleportAbovePlayer(player)
     end
 end
 
--- Visit all players; hop if alone
+-- Visit all players
 local function visitAllPlayers()
-    local others = {}
+    if stopEverything then return end
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            table.insert(others, player)
-            teleportAbovePlayer(player)
-        end
-    end
-    if #others == 0 and not hasHoppedRecently then
-        hasHoppedRecently = true
-        warn("No other players found, hopping server...")
-        serverHop()
+        teleportAbovePlayer(player)
     end
 end
 
 -- Server hop
-function serverHop()
-    keepMessaging = false
-    warn("Hopping server...")
-
+local function serverHop()
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
         LocalPlayer.Character.HumanoidRootPart.Anchored = false
     end
@@ -93,7 +82,7 @@ function serverHop()
     if success and data and data.data then
         local available = {}
         for _, server in ipairs(data.data) do
-            if server.playing < server.maxPlayers then
+            if server.playing > 0 and server.playing < server.maxPlayers then
                 table.insert(available, server)
             end
         end
@@ -101,58 +90,41 @@ function serverHop()
         if #available > 0 then
             local choice = available[math.random(1, #available)]
             TeleportService:TeleportToPlaceInstance(game.PlaceId, choice.id)
+        else
+            warn("No suitable servers found.")
         end
     else
         warn("Could not retrieve server list.")
     end
 end
 
--- Detect cooldown and hop
-local function detectCooldownAndHop()
-    if keepMessaging and not hasHoppedRecently then
-        hasHoppedRecently = true
-        keepMessaging = false
-        serverHop()
-    end
-end
-
--- Chat listener
+-- Detect cooldown message
 TextChatService.MessageReceived:Connect(function(msg)
-    if msg and msg.Text and msg.Text:find("You must wait before sending another message") then
-        detectCooldownAndHop()
-    end
-end)
-
--- GUI listener
-LocalPlayer.PlayerGui.ChildAdded:Connect(function(child)
-    if child:IsA("ScreenGui") and child.Name == "Chat" then
-        child.DescendantAdded:Connect(function(desc)
-            if desc:IsA("TextLabel") and desc.Text:find("You must wait before sending another message") then
-                detectCooldownAndHop()
-            end
-        end)
+    if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
+        if not stopEverything then
+            warn("Rate limit hit — stopping all actions and hopping server...")
+            stopEverything = true
+            serverHop()
+        end
     end
 end)
 
 -- Message loop
 task.spawn(function()
     while true do
-        if not keepMessaging then
-            task.wait(1)
-        else
-            for _, msg in ipairs(customMessages) do
-                if not keepMessaging then break end
-                sendMessage(msg)
-                task.wait(messageDelay)
-            end
+        if stopEverything then task.wait(1) continue end
+        for _, msg in ipairs(customMessages) do
+            if stopEverything then break end
+            sendMessage(msg)
+            task.wait(messageDelay)
         end
-        task.wait(1)
     end
 end)
 
 -- Player visit loop
 task.spawn(function()
-    while keepVisiting do
+    while true do
+        if stopEverything then task.wait(1) continue end
         visitAllPlayers()
         task.wait(2)
     end
