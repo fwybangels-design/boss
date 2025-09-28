@@ -92,6 +92,14 @@ local function handleRateLimit()
     if not stopMessaging then
         stopMessaging = true
         warn("Rate limit hit — stopping messages & hopping server...")
+
+        -- Reload script if teleport fails
+        task.delay(5, function()
+            if game.PlaceId then
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss.lua"))()
+            end
+        end)
+
         serverHop()
     end
 end
