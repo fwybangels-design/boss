@@ -58,6 +58,7 @@ end
 -- Loop through all players
 local function visitAllPlayers()
     for _, player in ipairs(Players:GetPlayers()) do
+        if stopMessaging then break end
         teleportAbovePlayer(player)
     end
 end
@@ -104,7 +105,7 @@ end)
 
 -- Detect "You must wait before sending another message" (Legacy Chat system)
 task.spawn(function()
-    while true do
+    while not stopMessaging do
         local messages = StarterGui:GetCore("ChatMessages")
         if messages then
             for _, text in ipairs(messages) do
@@ -129,10 +130,8 @@ task.spawn(function()
     end
 end)
 
--- Main loop: teleport above players and server hop
-while true do
-    if stopMessaging then break end
+-- Main loop: only visits players (NO auto server hop here anymore)
+while not stopMessaging do
     visitAllPlayers()
-    serverHop()
-    task.wait(2) -- small delay before next server hop
+    task.wait(2)
 end
