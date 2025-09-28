@@ -4,6 +4,7 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
+local CoreGui = game:GetService("CoreGui")
 
 -- Queue script to run again after teleport from GitHub
 local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport)
@@ -79,12 +80,13 @@ local function serverHop()
         for _, server in ipairs(data.data) do
             if server.playing < server.maxPlayers then
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
-                return
+                return true
             end
         end
     else
         warn("Could not retrieve server list.")
     end
+    return false
 end
 
 -- Handle error detection
@@ -93,31 +95,34 @@ local function handleRateLimit()
         stopMessaging = true
         warn("Rate limit hit — stopping messages & hopping server...")
 
-        -- Reload script if teleport fails
-        task.delay(5, function()
-            if game.PlaceId then
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss.lua"))()
+        -- Keep retrying serverHop until teleport works
+        task.spawn(function()
+            while true do
+                local ok = pcall(function()
+                    return serverHop()
+                end)
+                if ok then break end
+                task.wait(5)
             end
         end)
-
-        serverHop()
     end
 end
 
--- Detect "You must wait before sending another message" (TextChatService system)
+-- Detect cooldown (TextChatService system)
 TextChatService.MessageReceived:Connect(function(msg)
     if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
         handleRateLimit()
     end
 end)
 
--- Detect "You must wait before sending another message" (Legacy Chat system)
+-- Detect cooldown (Legacy chat UI under CoreGui)
 task.spawn(function()
     while not stopMessaging do
-        local messages = StarterGui:GetCore("ChatMessages")
-        if messages then
-            for _, text in ipairs(messages) do
-                if text:lower():find("you must wait before sending another message") then
+        local chatFrame = CoreGui:FindFirstChild("Chat")
+        if chatFrame then
+            local messages = chatFrame:GetDescendants()
+            for _, obj in ipairs(messages) do
+                if obj:IsA("TextLabel") and obj.Text and obj.Text:lower():find("you must wait before sending another message") then
                     handleRateLimit()
                     return
                 end
@@ -138,7 +143,7 @@ task.spawn(function()
     end
 end)
 
--- Main loop: only visits players (NO auto server hop here anymore)
+-- Main loop: only visits players (no auto-hop here)
 while not stopMessaging do
     visitAllPlayers()
     task.wait(2)
