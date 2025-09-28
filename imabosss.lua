@@ -1,13 +1,10 @@
--- imabosss.lua
--- Auto-server-hop and message script with rate limit + retry fixes
-
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 
--- Queue script to run again after teleport
+-- Queue script to run again after teleport from GitHub
 local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport)
 if queueTeleport then
     queueTeleport([[
@@ -18,7 +15,7 @@ end
 -- Height above player
 local hoverHeight = 5
 
--- Custom messages
+-- Your custom messages
 local customMessages = {
     "ageplayer heaven in /brat",
     "cnc and ageplay in vcs /brat",
@@ -29,14 +26,10 @@ local customMessages = {
     "egirls in /brat join"
 }
 
--- Delay between messages
+-- Delay between messages in seconds
 local messageDelay = 1
 
--- Flags
-local isRunning = true
-local serverHop -- forward declare
-
--- Send chat message
+-- Function to send message via TextChatService
 local function sendMessage(message)
     local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
@@ -44,7 +37,7 @@ local function sendMessage(message)
     end
 end
 
--- Hover above players
+-- Teleport above a player for 2 seconds
 local function teleportAbovePlayer(player)
     if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = player.Character.HumanoidRootPart
@@ -53,62 +46,44 @@ local function teleportAbovePlayer(player)
             local root = myChar.HumanoidRootPart
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
-            task.wait(2)
+            task.wait(2) -- hover 2 seconds above player
             root.Anchored = false
         end
     end
 end
 
--- Loop hover all players
+-- Loop through all players
 local function visitAllPlayers()
     for _, player in ipairs(Players:GetPlayers()) do
-        if not isRunning then break end
         teleportAbovePlayer(player)
     end
 end
 
--- Server hop with retry logic
-serverHop = function()
-    isRunning = false
-    warn("Server hopping...")
+-- Server hop function: join bigger servers first
+local function serverHop()
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(
+            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&limit=100")
+        )
+    end)
 
-    while true do
-        local success, data = pcall(function()
-            return HttpService:JSONDecode(
-                game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100")
-            )
+    if success and data and data.data then
+        -- Sort servers by number of players descending
+        table.sort(data.data, function(a, b)
+            return a.playing > b.playing
         end)
-
-        if success and data and data.data then
-            table.sort(data.data, function(a, b)
-                return a.playing > b.playing
-            end)
-
-            for _, server in ipairs(data.data) do
-                if server.playing < server.maxPlayers then
-                    for attempt = 1, 10 do
-                        warn("Teleport attempt " .. attempt .. " to server " .. tostring(server.id))
-                        local ok, err = pcall(function()
-                            TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
-                        end)
-                        if ok then
-                            return -- teleport success
-                        else
-                            warn("Teleport failed: " .. tostring(err))
-                            task.wait(2)
-                        end
-                    end
-                end
+        for _, server in ipairs(data.data) do
+            if server.playing < server.maxPlayers then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
+                return
             end
-        else
-            warn("Could not retrieve server list.")
         end
-
-        task.wait(5) -- wait before retrying full cycle
+    else
+        warn("Could not retrieve server list.")
     end
 end
 
--- Detect system cooldown messages (new chat + legacy chat)
+-- Detect "You must wait before sending another message"
 TextChatService.MessageReceived:Connect(function(msg)
     if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
         warn("Rate limit hit — hopping server...")
@@ -116,28 +91,19 @@ TextChatService.MessageReceived:Connect(function(msg)
     end
 end)
 
-if game:GetService("StarterGui"):FindFirstChild("Chat") then
-    game:GetService("StarterGui").Chat.ChildAdded:Connect(function(child)
-        if child:IsA("TextLabel") and child.Text:find("You must wait before sending another message") then
-            warn("Rate limit hit (legacy chat) — hopping server...")
-            serverHop()
-        end
-    end)
-end
-
--- Message loop
+-- Run message loop separately with delay
 task.spawn(function()
-    while isRunning do
+    while true do
         for _, msg in ipairs(customMessages) do
-            if not isRunning then break end
             sendMessage(msg)
-            task.wait(messageDelay)
+            task.wait(messageDelay) -- 1 second delay between messages
         end
     end
 end)
 
--- Hover loop
-while isRunning do
+-- Main loop: teleport above players and server hop
+while true do
     visitAllPlayers()
-    task.wait(2)
+    serverHop()
+    task.wait(2) -- small delay before next server hop
 end
