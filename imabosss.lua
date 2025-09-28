@@ -85,11 +85,27 @@ local function serverHop()
     end
 end
 
--- Detect "You must wait before sending another message"
+-- Unified cooldown/error detection
+local function detectCooldownAndHop()
+    warn("Rate limit hit — hopping server...")
+    serverHop()
+end
+
+-- New TextChatService messages
 TextChatService.MessageReceived:Connect(function(msg)
     if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
-        warn("Rate limit hit — hopping server...")
-        serverHop()
+        detectCooldownAndHop()
+    end
+end)
+
+-- Legacy Chat UI fallback (system message appears here)
+LocalPlayer.PlayerGui.ChildAdded:Connect(function(child)
+    if child:IsA("ScreenGui") and child.Name == "Chat" then
+        child.DescendantAdded:Connect(function(desc)
+            if desc:IsA("TextLabel") and desc.Text:find("You must wait before sending another message") then
+                detectCooldownAndHop()
+            end
+        end)
     end
 end)
 
