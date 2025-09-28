@@ -59,7 +59,7 @@ local function visitAllPlayers()
     end
 end
 
--- Server hop function: join bigger servers first
+-- Server hop function: pick random available server
 local function serverHop()
     local success, data = pcall(function()
         return HttpService:JSONDecode(
@@ -68,15 +68,17 @@ local function serverHop()
     end)
 
     if success and data and data.data then
-        -- Sort servers by number of players descending
-        table.sort(data.data, function(a, b)
-            return a.playing > b.playing
-        end)
+        local available = {}
         for _, server in ipairs(data.data) do
             if server.playing < server.maxPlayers then
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
-                return
+                table.insert(available, server)
             end
+        end
+
+        if #available > 0 then
+            local choice = available[math.random(1, #available)]
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, choice.id)
+            return
         end
     else
         warn("Could not retrieve server list.")
