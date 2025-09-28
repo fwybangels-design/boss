@@ -15,7 +15,7 @@ end
 -- Height above player
 local hoverHeight = 5
 
--- Messages
+-- Your custom messages
 local customMessages = {
     "ageplayer heaven in /brat",
     "cnc and ageplay in vcs /brat",
@@ -26,26 +26,19 @@ local customMessages = {
     "egirls in /brat join"
 }
 
--- Delay between messages
+-- Delay between messages in seconds
 local messageDelay = 1
 
--- Global stop flag
-local stopEverything = false
-
--- Send a message safely
+-- Function to send message via TextChatService
 local function sendMessage(message)
-    if stopEverything then return end
-    local channel = TextChatService.TextChannels:WaitForChild("RBXGeneral", 10)
+    local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
     if channel then
-        pcall(function()
-            channel:SendAsync(message)
-        end)
+        channel:SendAsync(message)
     end
 end
 
--- Teleport above a player
+-- Teleport above a player for 2 seconds
 local function teleportAbovePlayer(player)
-    if stopEverything then return end
     if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
         local targetHRP = player.Character.HumanoidRootPart
         local myChar = LocalPlayer.Character
@@ -53,26 +46,21 @@ local function teleportAbovePlayer(player)
             local root = myChar.HumanoidRootPart
             root.Anchored = true
             root.CFrame = CFrame.new(targetHRP.Position.X, targetHRP.Position.Y + hoverHeight, targetHRP.Position.Z)
-            task.wait(2)
+            task.wait(2) -- hover 2 seconds above player
             root.Anchored = false
         end
     end
 end
 
--- Visit all players
+-- Loop through all players
 local function visitAllPlayers()
-    if stopEverything then return end
     for _, player in ipairs(Players:GetPlayers()) do
         teleportAbovePlayer(player)
     end
 end
 
--- Server hop
+-- Server hop function: join bigger servers first
 local function serverHop()
-    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        LocalPlayer.Character.HumanoidRootPart.Anchored = false
-    end
-
     local success, data = pcall(function()
         return HttpService:JSONDecode(
             game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&limit=100")
@@ -80,52 +68,42 @@ local function serverHop()
     end)
 
     if success and data and data.data then
-        local available = {}
+        -- Sort servers by number of players descending
+        table.sort(data.data, function(a, b)
+            return a.playing > b.playing
+        end)
         for _, server in ipairs(data.data) do
-            if server.playing > 0 and server.playing < server.maxPlayers then
-                table.insert(available, server)
+            if server.playing < server.maxPlayers then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
+                return
             end
-        end
-
-        if #available > 0 then
-            local choice = available[math.random(1, #available)]
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, choice.id)
-        else
-            warn("No suitable servers found.")
         end
     else
         warn("Could not retrieve server list.")
     end
 end
 
--- Detect cooldown message
+-- Detect "You must wait before sending another message"
 TextChatService.MessageReceived:Connect(function(msg)
     if msg and msg.Text and string.find(msg.Text, "You must wait before sending another message") then
-        if not stopEverything then
-            warn("Rate limit hit — stopping all actions and hopping server...")
-            stopEverything = true
-            serverHop()
-        end
+        warn("Rate limit hit — hopping server...")
+        serverHop()
     end
 end)
 
--- Message loop
+-- Run message loop separately with delay
 task.spawn(function()
     while true do
-        if stopEverything then task.wait(1) continue end
         for _, msg in ipairs(customMessages) do
-            if stopEverything then break end
             sendMessage(msg)
-            task.wait(messageDelay)
+            task.wait(messageDelay) -- 1 second delay between messages
         end
     end
 end)
 
--- Player visit loop
-task.spawn(function()
-    while true do
-        if stopEverything then task.wait(1) continue end
-        visitAllPlayers()
-        task.wait(2)
-    end
-end)
+-- Main loop: teleport above players and server hop
+while true do
+    visitAllPlayers()
+    serverHop()
+    task.wait(2) -- small delay before next server hop
+end
