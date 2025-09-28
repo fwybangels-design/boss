@@ -12,6 +12,8 @@ if queueTeleport then
     ]])
 end
 
+keepMessaging = true  -- reset the flag so loops run after teleport
+
 -- Height above player
 local hoverHeight = 5
 
