@@ -59,28 +59,39 @@ local function visitAllPlayers()
     end
 end
 
--- Server hop function: join bigger servers first
+-- Server hop function: join a random open server
 local function serverHop()
+    -- tiny random delay to desync multiple accounts
+    local rnd = Random.new(math.floor(tick() * 1000) + (LocalPlayer and LocalPlayer.UserId or 0))
+    task.wait(rnd:NextNumber(0.5, 3.5))
+
     local success, data = pcall(function()
         return HttpService:JSONDecode(
-            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&limit=100")
+            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100")
         )
     end)
 
     if success and data and data.data then
-        -- Sort servers by number of players descending
-        table.sort(data.data, function(a, b)
-            return a.playing > b.playing
-        end)
+        -- Filter out full servers
+        local openServers = {}
         for _, server in ipairs(data.data) do
             if server.playing < server.maxPlayers then
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
-                return
+                table.insert(openServers, server)
             end
+        end
+
+        if #openServers > 0 then
+            -- pick a random open server
+            local chosen = openServers[rnd:NextInteger(1, #openServers)]
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, chosen.id)
+            return
         end
     else
         warn("Could not retrieve server list.")
     end
+
+    -- fallback: normal teleport if no server found
+    TeleportService:Teleport(game.PlaceId)
 end
 
 -- Detect "You must wait before sending another message"
