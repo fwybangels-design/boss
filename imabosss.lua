@@ -4,6 +4,9 @@ local LocalPlayer = Players.LocalPlayer
 -- 🔧 Make RNG unique per account
 math.randomseed(tick() + LocalPlayer.UserId)
 
+-- RANDOMIZED STARTUP STAGGER (2–10s) — prevents multi-client collision at launch
+task.wait(math.random(2, 10))
+
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
