@@ -1,12 +1,5 @@
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-
--- 🔧 Make RNG unique per account
-math.randomseed(tick() + LocalPlayer.UserId)
-
--- RANDOMIZED STARTUP STAGGER (2–10s) — prevents multi-client collision at launch
-task.wait(math.random(2, 10))
-
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
@@ -66,39 +59,28 @@ local function visitAllPlayers()
     end
 end
 
--- Server hop function: join a random open server
+-- Server hop function: join bigger servers first
 local function serverHop()
-    -- tiny random delay to desync multiple accounts
-    local rnd = Random.new(math.floor(tick() * 1000) + (LocalPlayer and LocalPlayer.UserId or 0))
-    task.wait(rnd:NextNumber(0.5, 3.5))
-
     local success, data = pcall(function()
         return HttpService:JSONDecode(
-            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100")
+            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Desc&limit=100")
         )
     end)
 
     if success and data and data.data then
-        -- Filter out full servers
-        local openServers = {}
+        -- Sort servers by number of players descending
+        table.sort(data.data, function(a, b)
+            return a.playing > b.playing
+        end)
         for _, server in ipairs(data.data) do
             if server.playing < server.maxPlayers then
-                table.insert(openServers, server)
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
+                return
             end
-        end
-
-        if #openServers > 0 then
-            -- pick a random open server
-            local chosen = openServers[math.random(1, #openServers)]
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, chosen.id)
-            return
         end
     else
         warn("Could not retrieve server list.")
     end
-
-    -- fallback: normal teleport if no server found
-    TeleportService:Teleport(game.PlaceId)
 end
 
 -- Detect "You must wait before sending another message"
