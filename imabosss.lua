@@ -59,50 +59,56 @@ local function visitAllPlayers()
     end
 end
 
--- ✅ Patched server hop function (same-game only)
-local function serverHop()
-    local rnd = Random.new(math.floor(tick() * 1000) + (LocalPlayer and LocalPlayer.UserId or 0))
-    task.wait(rnd:NextNumber(0.5, 3.5))
+-- Safer teleport with fresh server fetch if fails
+local function safeTeleportLoop()
+    local placeId = game.PlaceId
 
-    local success, data = pcall(function()
-        -- Use PlaceId here: only grabs servers for THIS game
-        return HttpService:JSONDecode(
-            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100")
-        )
-    end)
+    while true do
+        -- stagger multiclients 2–7s
+        task.wait(math.random(2, 7))
 
-    if success and data and data.data then
-        local openServers = {}
-        for _, server in ipairs(data.data) do
-            -- skip full servers and the one we're already in
-            if server.playing < server.maxPlayers and server.id ~= game.JobId then
-                table.insert(openServers, server)
+        local success, data = pcall(function()
+            return HttpService:JSONDecode(
+                game:HttpGet("https://games.roblox.com/v1/games/"..placeId.."/servers/Public?sortOrder=Asc&limit=100")
+            )
+        end)
+
+        if success and data and data.data then
+            local openServers = {}
+            for _, server in ipairs(data.data) do
+                if server.playing < server.maxPlayers and not server.vipServerId and not server.reserved then
+                    table.insert(openServers, server)
+                end
             end
-        end
 
-        if #openServers > 0 then
-            local chosen = openServers[rnd:NextInteger(1, #openServers)]
-            local tpSuccess, tpErr = pcall(function()
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, chosen.id)
-            end)
-            if not tpSuccess then
-                warn("Teleport failed:", tpErr)
+            if #openServers > 0 then
+                local chosen = openServers[math.random(1, #openServers)]
+                print("Teleporting to:", chosen.id)
+
+                local tpSuccess, tpErr = pcall(function()
+                    TeleportService:TeleportToPlaceInstance(placeId, chosen.id, LocalPlayer)
+                end)
+
+                if tpSuccess then
+                    return -- success, exit loop
+                else
+                    warn("Teleport failed: " .. tostring(tpErr))
+                    -- retry loop will fetch a NEW server list
+                end
+            else
+                warn("No servers found to hop to.")
             end
-            return
         else
-            warn("No open servers found.")
+            warn("Could not retrieve server list.")
         end
-    else
-        warn("Could not retrieve server list.")
-    end
 
-    -- fallback: just teleport to the same game (random server)
-    local tpSuccess, tpErr = pcall(function()
-        TeleportService:Teleport(game.PlaceId)
-    end)
-    if not tpSuccess then
-        warn("Fallback teleport failed:", tpErr)
+        task.wait(3) -- short pause before fetching new servers again
     end
+end
+
+-- Server hop wrapper
+local function serverHop()
+    safeTeleportLoop()
 end
 
 -- Detect "You must wait before sending another message"
