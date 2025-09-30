@@ -148,9 +148,9 @@ local messages = {
     "cnc and ageplay in vcs /brat",
     "join the new /brat",
     "camgir1s in /brat jvc",
-	"yo jvc rn she going crazy /brat,
+	"yo jvc rn she going crazy /brat",
 	"YO WHAT ARE THEY DOING ON CAM /brat",
-	"BRO WHAT IS SHE DOING ON CAM /wêêp",
+	"BRO WHAT IS SHE DOING ON CAM /brat",
 	"STAG3 GIRLS IN /brat"
 }
 
