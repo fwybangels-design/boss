@@ -59,24 +59,23 @@ local function visitAllPlayers()
     end
 end
 
--- ✅ Patched server hop function
+-- ✅ Patched server hop function (same-game only)
 local function serverHop()
-    -- tiny random delay to desync multiple accounts
     local rnd = Random.new(math.floor(tick() * 1000) + (LocalPlayer and LocalPlayer.UserId or 0))
     task.wait(rnd:NextNumber(0.5, 3.5))
 
     local success, data = pcall(function()
-        -- Use GameId instead of PlaceId for server listing
+        -- Use PlaceId here: only grabs servers for THIS game
         return HttpService:JSONDecode(
-            game:HttpGet("https://games.roblox.com/v1/games/"..game.GameId.."/servers/Public?sortOrder=Asc&limit=100")
+            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100")
         )
     end)
 
     if success and data and data.data then
-        -- Filter out full servers
         local openServers = {}
         for _, server in ipairs(data.data) do
-            if server.playing < server.maxPlayers then
+            -- skip full servers and the one we're already in
+            if server.playing < server.maxPlayers and server.id ~= game.JobId then
                 table.insert(openServers, server)
             end
         end
@@ -90,12 +89,14 @@ local function serverHop()
                 warn("Teleport failed:", tpErr)
             end
             return
+        else
+            warn("No open servers found.")
         end
     else
         warn("Could not retrieve server list.")
     end
 
-    -- fallback: normal teleport if no server found
+    -- fallback: just teleport to the same game (random server)
     local tpSuccess, tpErr = pcall(function()
         TeleportService:Teleport(game.PlaceId)
     end)
