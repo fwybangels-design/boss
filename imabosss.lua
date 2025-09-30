@@ -59,15 +59,16 @@ local function visitAllPlayers()
     end
 end
 
--- Server hop function: join a random open server
+-- ✅ Patched server hop function
 local function serverHop()
     -- tiny random delay to desync multiple accounts
     local rnd = Random.new(math.floor(tick() * 1000) + (LocalPlayer and LocalPlayer.UserId or 0))
     task.wait(rnd:NextNumber(0.5, 3.5))
 
     local success, data = pcall(function()
+        -- Use GameId instead of PlaceId for server listing
         return HttpService:JSONDecode(
-            game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100")
+            game:HttpGet("https://games.roblox.com/v1/games/"..game.GameId.."/servers/Public?sortOrder=Asc&limit=100")
         )
     end)
 
@@ -81,9 +82,13 @@ local function serverHop()
         end
 
         if #openServers > 0 then
-            -- pick a random open server
             local chosen = openServers[rnd:NextInteger(1, #openServers)]
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, chosen.id)
+            local tpSuccess, tpErr = pcall(function()
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, chosen.id)
+            end)
+            if not tpSuccess then
+                warn("Teleport failed:", tpErr)
+            end
             return
         end
     else
@@ -91,7 +96,12 @@ local function serverHop()
     end
 
     -- fallback: normal teleport if no server found
-    TeleportService:Teleport(game.PlaceId)
+    local tpSuccess, tpErr = pcall(function()
+        TeleportService:Teleport(game.PlaceId)
+    end)
+    if not tpSuccess then
+        warn("Fallback teleport failed:", tpErr)
+    end
 end
 
 -- Detect "You must wait before sending another message"
