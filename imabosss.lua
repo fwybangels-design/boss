@@ -142,16 +142,16 @@ end
 local queueteleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
 
 local messages = {
-    "ageplayer heaven in .gg/yea",
-    "cnc and ageplay in vcs .gg/yea",
-    "get active .gg/yea",
-    "cnc and ageplay in vcs .gg/yea",
-    "join the new .gg/yea",
-    "camgir1s in .gg/yea jvc",
-	"yo jvc rn she going crazy .gg/yea",
-	"YO WHAT ARE THEY DOING ON CAM .gg/yea",
-	"BRO WHAT IS SHE DOING ON CAM .gg/yea",
-	"STAG3 GIRLS IN .gg/yea"
+    "ageplayer heaven in .gg/kingdamon",
+    "cnc and ageplay in vcs .gg/kingdamon",
+    "get active .gg/kingdamon",
+    "cnc and ageplay in vcs .gg/kingdamon",
+    "join the new .gg/kingdamon",
+    "camgir1s in .gg/kingdamon jvc",
+	"yo jvc rn she going crazy .gg/kingdamon",
+	"YO WHAT ARE THEY DOING ON CAM .gg/kingdamon",
+	"BRO WHAT IS SHE DOING ON CAM .gg/kingdamon",
+	"STAG3 GIRLS IN .gg/kingdamon"
 }
 
 local function queueScript()
@@ -637,6 +637,7 @@ local function initialize()
 end
 
 initialize()
+
 
 
 
