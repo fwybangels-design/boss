@@ -1,3 +1,7 @@
+-- Rayfield GUI chat promotion script with settings auto-save/restore
+-- Just put this file in your executor/scripts folder, or upload to GitHub for auto-execute after teleport.
+-- No manual file setup required; file is created/read automatically if your executor supports writefile/readfile.
+
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
     Name = "chat promotion script",
@@ -17,6 +21,8 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 
+local SETTINGS_FILE = "chatpromotion_settings.json" -- File for auto-save/restore
+
 local spamServer = ""
 local isRunning = false
 local maxUsersPerGame = 5
@@ -35,7 +41,29 @@ local rawMessages = {
     "STAG3 GIRLS IN /kingdamon"
 }
 
--- ==== Performance/Optimization routines ====
+-- ==== Auto-save/load settings routines ====
+local function saveSettings()
+    local toSave = {
+        spamServer = spamServer,
+        autoHopEnabled = isRunning
+    }
+    if writefile then
+        writefile(SETTINGS_FILE, game:GetService("HttpService"):JSONEncode(toSave))
+    end
+end
+
+local function loadSettings()
+    if isfile and isfile(SETTINGS_FILE) then
+        local data = game:GetService("HttpService"):JSONDecode(readfile(SETTINGS_FILE))
+        spamServer = data.spamServer or "/kingdamon"
+        isRunning = data.autoHopEnabled or false
+    end
+end
+
+-- Load settings BEFORE creating controls, so they're pre-filled
+loadSettings()
+
+-- ==== Optimization routines ====
 local function applyNetworkOptimizations()
     local flags = {
         DFIntTaskSchedulerTargetFps = 20, FFlagDebugDisableInGameMenuV2 = true, FFlagDisableInGameMenuV2 = true,
@@ -123,7 +151,7 @@ local function optimizeRendering()
     end)
 end
 
--- ==== Serverhop feature, with auto-execute after teleport ====
+-- ==== Serverhop with auto-execute after teleport ====
 local function getAvailableServers(placeId)
     local availableServers = {}
     local success, result = pcall(function()
@@ -279,6 +307,7 @@ end
 local function stopSpamming()
     isRunning = false
     stopFollowing()
+    saveSettings() -- Save toggle state when stopped
     print("Script stopped")
     Rayfield:Notify({
         Title = "Spammer Stopped",
@@ -297,7 +326,6 @@ local function spamLoop()
     local processed = 0
     local maxPerRun = maxUsersPerGame
 
-    -- Performance optimization runs
     applyNetworkOptimizations()
     optimizeClientPerformance()
     forceDisableUI()
@@ -315,25 +343,25 @@ local function spamLoop()
                 wait(1)
             end
         end
-        -- Server hop with auto-execute after teleport
         if isRunning then
             print("Max users reached, teleporting to new server ...")
+            saveSettings() -- save before teleport
             teleportToNewServer()
-            wait(20) -- give time for teleport/script reload
+            wait(20)
         end
     end
-
     stopSpamming()
 end
 
 local Input = MainTab:CreateInput({
     Name = "server you want to mass dm",
-    CurrentValue = "",
+    CurrentValue = spamServer,
     PlaceholderText = "Input server example /kingdamon",
     RemoveTextAfterFocusLost = false,
     Flag = "Input1",
     Callback = function(Text)
         spamServer = Text
+        saveSettings()
         print("Mass DM server set to:", spamServer)
         Rayfield:Notify({
             Title = "Server Set",
@@ -345,9 +373,11 @@ local Input = MainTab:CreateInput({
 
 local Toggle = MainTab:CreateToggle({
     Name = "Start chat promotion (auto-hop)",
-    CurrentValue = false,
+    CurrentValue = isRunning,
     Flag = "Toggle1",
     Callback = function(Value)
+        isRunning = Value
+        saveSettings()
         if Value then
             if spamServer == "" then
                 Rayfield:Notify({
@@ -357,15 +387,11 @@ local Toggle = MainTab:CreateToggle({
                 })
                 return
             end
-            if isRunning then
-                Rayfield:Notify({
-                    Title = "Already running",
-                    Content = "Promotion is already running.",
-                    Duration = 5,
-                })
-                return
-            end
-            isRunning = true
+            Rayfield:Notify({
+                Title = "Promotion Started",
+                Content = "Script started with server: "..spamServer,
+                Duration = 4,
+            })
             spawn(spamLoop)
         else
             stopSpamming()
