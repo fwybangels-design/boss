@@ -402,7 +402,10 @@ local Toggle = MainTab:CreateToggle({
 
 Rayfield:Notify({Title="Script Loaded!",Content="Ready for chat promotions. Input server, then toggle ON. Q = stop.",Duration=7})
 
--- AUTO-START PROMOTION after serverhop/auto-execute if toggle was ON
-if isRunning and spamServer ~= "" then
-    spawn(spamLoop)
-end
+-- AUTO-START PROMOTION after GUI created and states restored!
+task.defer(function()
+    if isRunning and spamServer ~= "" then
+        Rayfield:Notify({Title="Auto Start",Content="Auto-starting chat promotion after hop.",Duration=5})
+        spawn(spamLoop)
+    end
+end)
