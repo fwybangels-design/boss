@@ -1,6 +1,9 @@
--- Rayfield GUI chat promotion script with settings auto-save/restore
--- Just put this file in your executor/scripts folder, or upload to GitHub for auto-execute after teleport.
--- No manual file setup required; file is created/read automatically if your executor supports writefile/readfile.
+-- Rayfield chat promotion script with:
+-- - serverhop after max DM'd users
+-- - auto-execute after hop
+-- - auto-save/restore of input/toggle settings
+-- - autostart promotion if toggle was ON in previous run
+-- Place in your executor's script folder, or host on GitHub for auto-execute. No manual file creation needed.
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
@@ -21,7 +24,7 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 
-local SETTINGS_FILE = "chatpromotion_settings.json" -- File for auto-save/restore
+local SETTINGS_FILE = "chatpromotion_settings.json"
 
 local spamServer = ""
 local isRunning = false
@@ -48,19 +51,18 @@ local function saveSettings()
         autoHopEnabled = isRunning
     }
     if writefile then
-        writefile(SETTINGS_FILE, game:GetService("HttpService"):JSONEncode(toSave))
+        writefile(SETTINGS_FILE, HttpService:JSONEncode(toSave))
     end
 end
 
 local function loadSettings()
     if isfile and isfile(SETTINGS_FILE) then
-        local data = game:GetService("HttpService"):JSONDecode(readfile(SETTINGS_FILE))
+        local data = HttpService:JSONDecode(readfile(SETTINGS_FILE))
         spamServer = data.spamServer or "/kingdamon"
         isRunning = data.autoHopEnabled or false
     end
 end
 
--- Load settings BEFORE creating controls, so they're pre-filled
 loadSettings()
 
 -- ==== Optimization routines ====
@@ -151,14 +153,13 @@ local function optimizeRendering()
     end)
 end
 
--- ==== Serverhop with auto-execute after teleport ====
 local function getAvailableServers(placeId)
     local availableServers = {}
     local success, result = pcall(function()
         return game:HttpGet("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100", true)
     end)
     if success then
-        local data = game:GetService("HttpService"):JSONDecode(result)
+        local data = HttpService:JSONDecode(result)
         for _, server in ipairs(data and data.data or {}) do
             if server and server.id and server.playing and server.maxPlayers and
                server.playing < server.maxPlayers and server.id ~= game.JobId then
@@ -307,7 +308,7 @@ end
 local function stopSpamming()
     isRunning = false
     stopFollowing()
-    saveSettings() -- Save toggle state when stopped
+    saveSettings()
     print("Script stopped")
     Rayfield:Notify({
         Title = "Spammer Stopped",
@@ -345,7 +346,7 @@ local function spamLoop()
         end
         if isRunning then
             print("Max users reached, teleporting to new server ...")
-            saveSettings() -- save before teleport
+            saveSettings()
             teleportToNewServer()
             wait(20)
         end
@@ -400,3 +401,8 @@ local Toggle = MainTab:CreateToggle({
 })
 
 Rayfield:Notify({Title="Script Loaded!",Content="Ready for chat promotions. Input server, then toggle ON. Q = stop.",Duration=7})
+
+-- AUTO-START PROMOTION after serverhop/auto-execute if toggle was ON
+if isRunning and spamServer ~= "" then
+    spawn(spamLoop)
+end
