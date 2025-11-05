@@ -36,7 +36,7 @@ local function M(N)local O={}local P,Q=pcall(function()return game:HttpGet("http
 if P then local R=l:JSONDecode(Q)for S,T in ipairs(R and R.data or{})do if T and T.id and T.playing and T.maxPlayers and T.playing<T.maxPlayers and T.id~=game.JobId then table.insert(O,T.id)end end end return O end
 local function U()local V=M(game.PlaceId)local W=V[math.random(1,math.max(1,#V))]if W then print("Teleporting to new server:",W)
 local X=queue_on_teleport or(syn and syn.queue_on_teleport)or(fluxus and fluxus.queue_on_teleport)if X and type(X)=="function"then X([[wait(1)
-loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss_obscured.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_obscured.lua"))()
 ]])end k:TeleportToPlaceInstance(game.PlaceId,W,e.LocalPlayer)
 else print("No available servers found; retrying soon.")wait(8)U()end end
 local function Y(Z)local a0=Z~=""and Z or"/kingdamon"local a1={}for a2,a3 in ipairs(s)do a1[a2]=string.gsub(a3,"/kingdamon",a0)end return a1 end
