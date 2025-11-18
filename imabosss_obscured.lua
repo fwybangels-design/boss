@@ -28,7 +28,7 @@ local q=5
 local r=nil
 local s={"ageplayer heaven in /kingdamon","cnc and ageplay in vcs /kingdamon","ageplayers and regressers /kingdamon dc","her little parts are out /kingdamon",
 "join for combosses /kingdamon dc","camgir1s in /kingdamon jvc","yo jvc rn she going crazy /kingdamon","YO WHAT ARE THEY DOING ON CAM /kingdamon",
-"$$$ GWS IN /kingdamon JOIN UP","ageplayer camgir1s in /kingdamon jvc"}
+"$$$ GWS IN /kingdamon JOIN UP","tight ageplayers in /kingdamon jvc"}
 local function t()local u={spamServer=o,autoHopEnabled=p}if writefile then writefile(n,l:JSONEncode(u))end end
 local function v()if isfile and isfile(n)then local w=l:JSONDecode(readfile(n))o=w.spamServer or "/kingdamon" p=w.autoHopEnabled or false end end
 v()
