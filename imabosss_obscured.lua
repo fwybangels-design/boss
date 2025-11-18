@@ -43,11 +43,11 @@ local rawMessages = {
     "cnc and ageplay in vcs /kingdamon",
     "ageplayers and regressers /kingdamon dc",
     "join for combosses /kingdamon dc",
-    "HER LITTLE PARTS ARE OUT /KINGDAMON",
+    "her little parts are out /relaxed",
     "camgir1s in /kingdamon jvc",
     "yo jvc rn she going crazy /kingdamon",
     "YO WHAT ARE THEY DOING ON CAM /kingdamon",
-    "$100 GWS IN /kingdamon JOIN UP",
+    "$$$ GWS IN /kingdamon JOIN UP",
     "ageplayer camgir1s in /kingdamon jvc"
 }
 
