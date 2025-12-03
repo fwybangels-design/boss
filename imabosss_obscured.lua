@@ -227,30 +227,117 @@ local function getAvailableServers(placeId, maxPages)
     return results
 end
 
--- Teleport to another server (simplified to match original working version)
+-- Helper: build the loader string that will be queued for post-teleport execution.
+-- Update the URL below if you want to point to a different hosted script.
+local function build_loader_string()
+    local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_obscured.lua"
+    local loader = "wait(2) loadstring(game:HttpGet(\"" .. loader_url .. "\"))()"
+    return loader
+end
+
+-- Try to queue the loader using common executor queue functions.
+-- Returns true if queued successfully, false otherwise. Also returns a message.
+local function try_queue_loader(loader_str)
+    -- 1) global queue_on_teleport
+    if type(queue_on_teleport) == "function" then
+        local ok, err = pcall(function() queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via global queue_on_teleport" end
+    end
+
+    -- 2) syn (Synapse X)
+    if syn and type(syn.queue_on_teleport) == "function" then
+        local ok, err = pcall(function() syn.queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via syn.queue_on_teleport" end
+    end
+
+    -- 3) fluxus
+    if fluxus and type(fluxus.queue_on_teleport) == "function" then
+        local ok, err = pcall(function() fluxus.queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via fluxus.queue_on_teleport" end
+    end
+
+    -- 4) krnl (krnl has a different name in some builds) - best-effort probing
+    if cloaked and type(cloaked.queue_on_teleport) == "function" then
+        local ok, err = pcall(function() cloaked.queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via cloaked.queue_on_teleport" end
+    end
+
+    -- Not queued by known functions
+    return false, "no known queue_on_teleport available"
+end
+
+-- Teleport to another server, try multiple candidates and fallbacks; queue script if possible
 local function teleportToAnotherServer()
+    print("teleportToAnotherServer: gathering servers for place:", tostring(game.PlaceId), "current job:", tostring(game.JobId))
+
     local servers = getAvailableServers(game.PlaceId, 6)
-    
-    if #servers == 0 then
-        print("No available servers found; retrying soon.")
-        wait(8)
-        teleportToAnotherServer()
+    if not servers or #servers == 0 then
+        print("teleportToAnotherServer: No available servers found from API; attempting fallback Teleport to place (random instance).")
+        local ok, err = pcall(function() TeleportService:Teleport(game.PlaceId) end)
+        if not ok then
+            warn("teleportToAnotherServer: fallback Teleport failed:", err)
+            wait(6)
+            return teleportToAnotherServer()
+        end
         return
     end
-    
-    local targetServer = servers[math.random(1, #servers)]
-    
-    print("Teleporting to new server:", targetServer)
-    
-    -- Queue script for after teleport (simple inline check like original)
-    local queueFunc = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
-    if queueFunc and type(queueFunc) == "function" then
-        queueFunc([[wait(1)
-loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_obscured.lua"))()
-]])
+
+    -- Build loader and attempt to queue it
+    local loader_str = build_loader_string()
+    local queued, qmsg = try_queue_loader(loader_str)
+    if queued then
+        print("teleportToAnotherServer: loader queued successfully:", qmsg)
+        uiLib:Notify({ Title = "Queued Loader", Content = "Script loader has been queued for post-teleport execution ("..qmsg..")", Duration = 5 })
+    else
+        print("teleportToAnotherServer: could NOT queue loader automatically:", qmsg)
+        -- Attempt to copy loader to clipboard so you can paste it on the new server if needed
+        local clipboard_done = false
+        if setclipboard then
+            pcall(function() setclipboard(loader_str) clipboard_done = true end)
+        elseif syn and syn.set_clipboard then
+            pcall(function() syn.set_clipboard(loader_str) clipboard_done = true end)
+        elseif set_clipboard then
+            pcall(function() set_clipboard(loader_str) clipboard_done = true end)
+        end
+
+        if clipboard_done then
+            uiLib:Notify({ Title = "Manual Restart", Content = "No queue available: loader string copied to clipboard. Paste & run it after teleport.", Duration = 8 })
+            print("teleportToAnotherServer: loader copied to clipboard; paste & run after the hop if needed.")
+        else
+            uiLib:Notify({ Title = "Manual Restart Required", Content = "No queue available and clipboard unavailable. You will need to re-inject the script after teleport.", Duration = 10 })
+            print("teleportToAnotherServer: no automatic queue available and clipboard failed; manual re-injection required.")
+        end
     end
-    
-    TeleportService:TeleportToPlaceInstance(game.PlaceId, targetServer, Players.LocalPlayer)
+
+    -- Try up to N random candidates
+    local tries = math.min(5, #servers)
+    for i = 1, tries do
+        local idx = math.random(1, #servers)
+        local instanceId = servers[idx]
+        print(("teleportToAnotherServer: trying instance %s (attempt %d/%d)"):format(instanceId, i, tries))
+
+        -- Try TeleportToPlaceInstance variants (executor-dependent)
+        local okTele, teleErr = pcall(function()
+            -- try 3-arg with player (some environments accept this)
+            pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, instanceId, Players.LocalPlayer) end)
+            -- try 2-arg fallback
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, instanceId)
+        end)
+
+        if okTele then
+            print("teleportToAnotherServer: Teleport issued to instance:", instanceId)
+            return
+        else
+            warn("teleportToAnotherServer: Teleport attempt failed for instance:", instanceId, "err:", teleErr)
+            -- remove tried instance and try another
+            table.remove(servers, idx)
+        end
+        wait(1)
+    end
+
+    -- All chosen instances failed — fallback to random Teleport
+    warn("teleportToAnotherServer: all chosen instances failed, attempting fallback Teleport to place.")
+    pcall(function() TeleportService:Teleport(game.PlaceId) end)
 end
 
 -- Build messages with server replacement
