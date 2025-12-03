@@ -183,13 +183,15 @@ local function performanceLoop()
 end
 
 -- Get public servers with pagination (returns list of instance ids)
+-- NOTE: Roblox API bug - limit=100 returns empty data, use limit=50 instead
 local function getAvailableServers(placeId, maxPages)
     maxPages = maxPages or 5
     local results = {}
     local cursor = nil
 
     for page = 1, maxPages do
-        local url = "https://games.roblox.com/v1/games/" .. tostring(placeId) .. "/servers/Public?sortOrder=Asc&limit=100"
+        -- Using limit=50 because limit=100 returns empty data due to Roblox API bug
+        local url = "https://games.roblox.com/v1/games/" .. tostring(placeId) .. "/servers/Public?sortOrder=Asc&limit=50"
         if cursor and cursor ~= "" then
             url = url .. "&cursor=" .. tostring(cursor)
         end
