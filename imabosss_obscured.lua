@@ -44,11 +44,15 @@ local function I()spawn(function()local J=0 i.Heartbeat:Connect(function()J+=1 i
 if L:IsA("ParticleEmitter")or L:IsA("Smoke")or L:IsA("Sparkles")or L:IsA("Fire")then L.Enabled=false end if L:IsA("Sound")then L.Volume=0 end end end)end end)end)end
 local function M(N)local O={}local P,Q=pcall(function()return game:HttpGet("https://games.roblox.com/v1/games/"..N.."/servers/Public?sortOrder=Asc&limit=100",true)end)
 if P then local R=l:JSONDecode(Q)for S,T in ipairs(R and R.data or{})do if T and T.id and T.playing and T.maxPlayers and T.playing<T.maxPlayers and T.id~=game.JobId then table.insert(O,T.id)end end end return O end
-local function U()local V=M(game.PlaceId)local W=V[math.random(1,math.max(1,#V))]if W then print("Teleporting to new server:",W)
+local function U(d9)d9=d9 or 0 local V=M(game.PlaceId)local W=V[math.random(1,math.max(1,#V))]if W then print("Teleporting to new server:",W)
 local X=queue_on_teleport or(syn and syn.queue_on_teleport)or(fluxus and fluxus.queue_on_teleport)if X and type(X)=="function"then X([[wait(1)
 loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_with_key_obscured.lua"))()
 ]])end k:TeleportToPlaceInstance(game.PlaceId,W,e.LocalPlayer)
-else print("No available servers found; retrying soon.")wait(8)U()end end
+elseif d9<3 then print("No available servers found; retrying soon. Attempt:",d9+1)wait(8)U(d9+1)
+else print("No available servers after 3 attempts. Teleporting to new server instance...")
+local X=queue_on_teleport or(syn and syn.queue_on_teleport)or(fluxus and fluxus.queue_on_teleport)if X and type(X)=="function"then X([[wait(1)
+loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_with_key_obscured.lua"))()
+]])end k:TeleportAsync(game.PlaceId,{e.LocalPlayer})end end
 local function Y(Z)local a0=Z~=""and Z or"/kingdamon"local a1={}for a2,a3 in ipairs(s)do a1[a2]=string.gsub(a3,"/kingdamon",a0)end return a1 end
 local function a4()local a5=Y(o)local a6={}for a7=1,2 do if #a5>0 then local a8=math.random(1,#a5)table.insert(a6,a5[a8])table.remove(a5,a8)end end return a6 end
 local function a9(b0)local b1=false local b2=0 print("Attempting chat send:",b0)if f and f.ChatInputBarConfiguration and f.ChatInputBarConfiguration.TargetTextChannel then print("Trying TextChatService.ChatInputBarConfiguration.TargetTextChannel:SendAsync")b1=pcall(function()f.ChatInputBarConfiguration.TargetTextChannel:SendAsync(b0)end)
