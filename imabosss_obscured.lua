@@ -239,35 +239,56 @@ end
 -- Helper: build the loader string that will be queued for post-teleport execution.
 -- Update the URL below if you want to point to a different hosted script.
 local function build_loader_string()
-    local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_obscured.lua"
-    local loader = ([[wait(1)
-pcall(function() loadstring(game:HttpGet("%s"))() end)]]):format(loader_url)
+    -- Try to load from main branch first, this is the stable URL after PR is merged
+    local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/main/imabosss_obscured.lua"
+    local loader = ([[wait(2)
+local success, err = pcall(function() 
+    loadstring(game:HttpGet("%s"))() 
+end)
+if not success then
+    warn("Auto-execute failed:", err)
+end]]):format(loader_url)
     return loader
 end
 
 -- Try to queue the loader using common executor queue functions.
 -- Returns true if queued successfully, false otherwise. Also returns a message.
 local function try_queue_loader(loader_str)
-    -- 1) global queue_on_teleport
+    -- 1) global queue_on_teleport (most common)
     if type(queue_on_teleport) == "function" then
         local ok, err = pcall(function() queue_on_teleport(loader_str) end)
         if ok then return true, "queued via global queue_on_teleport" end
     end
 
     -- 2) syn (Synapse X)
-    if syn and type(syn.queue_on_teleport) == "function" then
+    if type(syn) == "table" and type(syn.queue_on_teleport) == "function" then
         local ok, err = pcall(function() syn.queue_on_teleport(loader_str) end)
         if ok then return true, "queued via syn.queue_on_teleport" end
     end
 
     -- 3) fluxus
-    if fluxus and type(fluxus.queue_on_teleport) == "function" then
+    if type(fluxus) == "table" and type(fluxus.queue_on_teleport) == "function" then
         local ok, err = pcall(function() fluxus.queue_on_teleport(loader_str) end)
         if ok then return true, "queued via fluxus.queue_on_teleport" end
     end
 
-    -- 4) krnl (krnl has a different name in some builds) - best-effort probing
-    if cloaked and type(cloaked.queue_on_teleport) == "function" then
+    -- 4) krnl
+    if type(krnl) == "table" and type(krnl.queue_on_teleport) == "function" then
+        local ok, err = pcall(function() krnl.queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via krnl.queue_on_teleport" end
+    end
+
+    -- 5) getgenv queue_on_teleport (some executors use this)
+    if type(getgenv) == "function" then
+        local genv = getgenv()
+        if genv and type(genv.queue_on_teleport) == "function" then
+            local ok, err = pcall(function() genv.queue_on_teleport(loader_str) end)
+            if ok then return true, "queued via getgenv().queue_on_teleport" end
+        end
+    end
+
+    -- 6) cloaked (some builds)
+    if type(cloaked) == "table" and type(cloaked.queue_on_teleport) == "function" then
         local ok, err = pcall(function() cloaked.queue_on_teleport(loader_str) end)
         if ok then return true, "queued via cloaked.queue_on_teleport" end
     end
