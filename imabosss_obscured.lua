@@ -1,6 +1,10 @@
--- Chat promotion script (fixed teleporting + pagination + debug)
--- This is the full unobfuscated script with improved getAvailableServers and teleportToAnotherServer.
--- It follows pagination for the Roblox public servers API, logs useful debug info, and tries multiple teleport fallbacks.
+-- Chat promotion script (teleport restart improvements)
+-- This is your earlier fixed script with improved post-teleport auto-restart logic.
+-- Behavior changes:
+-- 1) Before teleport, script attempts several known "queue" methods (queue_on_teleport, syn.queue_on_teleport, fluxus.queue_on_teleport).
+-- 2) If no queue function is available, it will attempt to copy a small loader string to the clipboard and notify you so you can paste/run it after the hop.
+-- 3) Notifications/logs explain whether the loader was queued successfully or whether manual re-injection is required.
+-- Note: automatic persistence across teleports relies on your executor supporting queue_on_teleport. If it does not, manual paste/run after hop is required.
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -223,6 +227,46 @@ local function getAvailableServers(placeId, maxPages)
     return results
 end
 
+-- Helper: build the loader string that will be queued for post-teleport execution.
+-- Update the URL below if you want to point to a different hosted script.
+local function build_loader_string()
+    local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_with_key_obscured.lua"
+    local loader = ([[wait(1)
+pcall(function() loadstring(game:HttpGet("%s"))() end)]]):format(loader_url)
+    return loader
+end
+
+-- Try to queue the loader using common executor queue functions.
+-- Returns true if queued successfully, false otherwise. Also returns a message.
+local function try_queue_loader(loader_str)
+    -- 1) global queue_on_teleport
+    if type(queue_on_teleport) == "function" then
+        local ok, err = pcall(function() queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via global queue_on_teleport" end
+    end
+
+    -- 2) syn (Synapse X)
+    if syn and type(syn.queue_on_teleport) == "function" then
+        local ok, err = pcall(function() syn.queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via syn.queue_on_teleport" end
+    end
+
+    -- 3) fluxus
+    if fluxus and type(fluxus.queue_on_teleport) == "function" then
+        local ok, err = pcall(function() fluxus.queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via fluxus.queue_on_teleport" end
+    end
+
+    -- 4) krnl (krnl has a different name in some builds) - best-effort probing
+    if cloaked and type(cloaked.queue_on_teleport) == "function" then
+        local ok, err = pcall(function() cloaked.queue_on_teleport(loader_str) end)
+        if ok then return true, "queued via cloaked.queue_on_teleport" end
+    end
+
+    -- Not queued by known functions
+    return false, "no known queue_on_teleport available"
+end
+
 -- Teleport to another server, try multiple candidates and fallbacks; queue script if possible
 local function teleportToAnotherServer()
     print("teleportToAnotherServer: gathering servers for place:", tostring(game.PlaceId), "current job:", tostring(game.JobId))
@@ -239,29 +283,39 @@ local function teleportToAnotherServer()
         return
     end
 
+    -- Build loader and attempt to queue it
+    local loader_str = build_loader_string()
+    local queued, qmsg = try_queue_loader(loader_str)
+    if queued then
+        print("teleportToAnotherServer: loader queued successfully:", qmsg)
+        uiLib:Notify({ Title = "Queued Loader", Content = "Script loader has been queued for post-teleport execution ("..qmsg..")", Duration = 5 })
+    else
+        print("teleportToAnotherServer: could NOT queue loader automatically:", qmsg)
+        -- Attempt to copy loader to clipboard so you can paste it on the new server if needed
+        local clipboard_done = false
+        if setclipboard then
+            pcall(function() setclipboard(loader_str) clipboard_done = true end)
+        elseif syn and syn.set_clipboard then
+            pcall(function() syn.set_clipboard(loader_str) clipboard_done = true end)
+        elseif set_clipboard then
+            pcall(function() set_clipboard(loader_str) clipboard_done = true end)
+        end
+
+        if clipboard_done then
+            uiLib:Notify({ Title = "Manual Restart", Content = "No queue available: loader string copied to clipboard. Paste & run it after teleport.", Duration = 8 })
+            print("teleportToAnotherServer: loader copied to clipboard; paste & run after the hop if needed.")
+        else
+            uiLib:Notify({ Title = "Manual Restart Required", Content = "No queue available and clipboard unavailable. You will need to re-inject the script after teleport.", Duration = 10 })
+            print("teleportToAnotherServer: no automatic queue available and clipboard failed; manual re-injection required.")
+        end
+    end
+
     -- Try up to N random candidates
     local tries = math.min(5, #servers)
     for i = 1, tries do
         local idx = math.random(1, #servers)
         local instanceId = servers[idx]
         print(("teleportToAnotherServer: trying instance %s (attempt %d/%d)"):format(instanceId, i, tries))
-
-        -- queue script post-teleport if supported
-        local queueFunc = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
-        if queueFunc and type(queueFunc) == "function" then
-            local okQ, qErr = pcall(function()
-                queueFunc([[wait(1)
-loadstring(game:HttpGet("https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_with_key_obscured.lua"))()
-]])
-            end)
-            if okQ then
-                print("teleportToAnotherServer: queued script for post-teleport execution.")
-            else
-                warn("teleportToAnotherServer: queue_on_teleport failed:", qErr)
-            end
-        else
-            print("teleportToAnotherServer: no queue_on_teleport available in this executor.")
-        end
 
         -- Try TeleportToPlaceInstance variants (executor-dependent)
         local okTele, teleErr = pcall(function()
