@@ -306,14 +306,12 @@ local function teleportToAnotherServer()
     end
 
     local servers = getAvailableServers(game.PlaceId, 6)
+    
+    -- If no servers found from API, just teleport to a random instance directly
     if not servers or #servers == 0 then
-        print("teleportToAnotherServer: No available servers found from API; attempting fallback Teleport to place (random instance).")
-        local ok, err = pcall(function() TeleportService:Teleport(game.PlaceId) end)
-        if not ok then
-            warn("teleportToAnotherServer: fallback Teleport failed:", err)
-            wait(6)
-            return teleportToAnotherServer()
-        end
+        print("teleportToAnotherServer: No servers from API, using direct Teleport to random instance.")
+        uiLib:Notify({ Title = "Teleporting", Content = "Teleporting to random server...", Duration = 3 })
+        pcall(function() TeleportService:Teleport(game.PlaceId) end)
         return
     end
 
