@@ -231,8 +231,7 @@ end
 -- Update the URL below if you want to point to a different hosted script.
 local function build_loader_string()
     local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_obscured.lua"
-    local loader = ([[wait(2)
-loadstring(game:HttpGet("%s"))()]]):format(loader_url)
+    local loader = "wait(2) loadstring(game:HttpGet(\"" .. loader_url .. "\"))()"
     return loader
 end
 
