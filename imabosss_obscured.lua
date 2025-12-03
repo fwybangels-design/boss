@@ -213,7 +213,14 @@ local function getAvailableServers(placeId, maxPages)
         local list = decoded.data or {}
         print(("getAvailableServers page %d: returned %d entries, nextPageCursor='%s'"):format(page, #list, tostring(decoded.nextPageCursor)))
         for _, server in ipairs(list) do
-            if server and server.id and server.playing and server.maxPlayers and server.playing < server.maxPlayers and server.id ~= game.JobId then
+            -- Check server has required fields and is not full
+            local hasId = server and server.id
+            local playing = server and (server.playing or 0)
+            local maxPlayers = server and (server.maxPlayers or 50)
+            local notFull = playing < maxPlayers
+            local notCurrentServer = hasId and server.id ~= game.JobId
+            
+            if hasId and notFull and notCurrentServer then
                 table.insert(results, server.id)
             end
         end
