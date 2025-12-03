@@ -307,34 +307,17 @@ local function teleportToAnotherServer()
         end
     end
 
-    -- Use direct Teleport to a random server instance (most reliable method)
+    -- Use direct Teleport to a random server instance (same as working script)
     print("teleportToAnotherServer: Using direct Teleport to random instance.")
     uiLib:Notify({ Title = "Teleporting", Content = "Teleporting to new server...", Duration = 3 })
     
-    local teleportSuccess = false
-    
-    -- Try TeleportAsync first (newer API)
-    pcall(function()
-        TeleportService:TeleportAsync(game.PlaceId, {Players.LocalPlayer})
-        teleportSuccess = true
-    end)
-    
-    -- If TeleportAsync failed, try regular Teleport
-    if not teleportSuccess then
-        pcall(function()
-            TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
-            teleportSuccess = true
-        end)
+    -- Use the exact same teleport call as the working script: TeleportService:Teleport(game.PlaceId) without player argument
+    local ok, err = pcall(function() TeleportService:Teleport(game.PlaceId) end)
+    if not ok then
+        warn("teleportToAnotherServer: Teleport failed:", err)
+    else
+        print("teleportToAnotherServer: Teleport command issued")
     end
-    
-    -- Last resort: Teleport without player argument
-    if not teleportSuccess then
-        pcall(function()
-            TeleportService:Teleport(game.PlaceId)
-        end)
-    end
-    
-    print("teleportToAnotherServer: Teleport command issued")
 end
 
 -- Build messages with server replacement
