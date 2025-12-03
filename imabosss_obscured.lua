@@ -229,16 +229,10 @@ end
 
 -- Helper: build the loader string that will be queued for post-teleport execution.
 -- Update the URL below if you want to point to a different hosted script.
--- Now includes settings so the script auto-starts after teleport.
 local function build_loader_string()
     local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_obscured.lua"
-    -- Use string.format %q for proper Lua string escaping
-    local quotedServer = string.format("%q", spamServer)
-    local loader = ([[wait(1)
-_G.CHATPROMO_AUTO_START = true
-_G.CHATPROMO_SERVER = ]] .. quotedServer .. [[
-
-pcall(function() loadstring(game:HttpGet("%s"))() end)]]):format(loader_url)
+    local loader = ([[wait(2)
+loadstring(game:HttpGet("%s"))()]]):format(loader_url)
     return loader
 end
 
@@ -571,26 +565,9 @@ uiLib:Notify({
     Duration = 7
 })
 
--- Auto-start if configured (check global variables set by queued loader first)
+-- Auto-start if configured
 task.defer(function()
-    -- Check if we were started by the queued loader after a teleport
-    if _G.CHATPROMO_AUTO_START then
-        -- Use the settings passed via global variables
-        local serverFromLoader = _G.CHATPROMO_SERVER
-        -- Clear the global variables so they don't persist
-        _G.CHATPROMO_AUTO_START = nil
-        _G.CHATPROMO_SERVER = nil
-        
-        -- Only auto-start if we have a valid server
-        if serverFromLoader and serverFromLoader ~= "" then
-            spamServer = serverFromLoader
-            autoHopEnabled = true
-            saveSettings()
-            uiLib:Notify({ Title = "Auto Start", Content = "Auto-starting chat promotion after hop.", Duration = 5 })
-            spawn(mainLoop)
-        end
-    elseif autoHopEnabled and spamServer ~= "" then
-        -- Fallback to file-based settings (if they persisted)
+    if autoHopEnabled and spamServer ~= "" then
         uiLib:Notify({ Title = "Auto Start", Content = "Auto-starting chat promotion after hop.", Duration = 5 })
         spawn(mainLoop)
     end
