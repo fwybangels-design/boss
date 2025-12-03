@@ -276,9 +276,9 @@ local function try_queue_loader(loader_str)
     return false, "no known queue_on_teleport available"
 end
 
--- Teleport to another server, try multiple candidates and fallbacks; queue script if possible
+-- Teleport to another server using direct teleport (most reliable method)
 local function teleportToAnotherServer()
-    print("teleportToAnotherServer: gathering servers for place:", tostring(game.PlaceId), "current job:", tostring(game.JobId))
+    print("teleportToAnotherServer: preparing to teleport to new server for place:", tostring(game.PlaceId))
 
     -- Build loader and attempt to queue it BEFORE any teleport
     local loader_str = build_loader_string()
@@ -307,45 +307,34 @@ local function teleportToAnotherServer()
         end
     end
 
-    local servers = getAvailableServers(game.PlaceId, 6)
+    -- Use direct Teleport to a random server instance (most reliable method)
+    print("teleportToAnotherServer: Using direct Teleport to random instance.")
+    uiLib:Notify({ Title = "Teleporting", Content = "Teleporting to new server...", Duration = 3 })
     
-    -- If no servers found from API, just teleport to a random instance directly
-    if not servers or #servers == 0 then
-        print("teleportToAnotherServer: No servers from API, using direct Teleport to random instance.")
-        uiLib:Notify({ Title = "Teleporting", Content = "Teleporting to random server...", Duration = 3 })
-        pcall(function() TeleportService:Teleport(game.PlaceId) end)
-        return
-    end
-
-    -- Try up to N random candidates
-    local tries = math.min(5, #servers)
-    for i = 1, tries do
-        local idx = math.random(1, #servers)
-        local instanceId = servers[idx]
-        print(("teleportToAnotherServer: trying instance %s (attempt %d/%d)"):format(instanceId, i, tries))
-
-        -- Try TeleportToPlaceInstance variants (executor-dependent)
-        local okTele, teleErr = pcall(function()
-            -- try 3-arg with player (some environments accept this)
-            pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, instanceId, Players.LocalPlayer) end)
-            -- try 2-arg fallback
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, instanceId)
+    local teleportSuccess = false
+    
+    -- Try TeleportAsync first (newer API)
+    pcall(function()
+        TeleportService:TeleportAsync(game.PlaceId, {Players.LocalPlayer})
+        teleportSuccess = true
+    end)
+    
+    -- If TeleportAsync failed, try regular Teleport
+    if not teleportSuccess then
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
+            teleportSuccess = true
         end)
-
-        if okTele then
-            print("teleportToAnotherServer: Teleport issued to instance:", instanceId)
-            return
-        else
-            warn("teleportToAnotherServer: Teleport attempt failed for instance:", instanceId, "err:", teleErr)
-            -- remove tried instance and try another
-            table.remove(servers, idx)
-        end
-        wait(1)
     end
-
-    -- All chosen instances failed — fallback to random Teleport
-    warn("teleportToAnotherServer: all chosen instances failed, attempting fallback Teleport to place.")
-    pcall(function() TeleportService:Teleport(game.PlaceId) end)
+    
+    -- Last resort: Teleport without player argument
+    if not teleportSuccess then
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId)
+        end)
+    end
+    
+    print("teleportToAnotherServer: Teleport command issued")
 end
 
 -- Build messages with server replacement
