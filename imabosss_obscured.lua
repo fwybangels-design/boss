@@ -230,7 +230,7 @@ end
 -- Helper: build the loader string that will be queued for post-teleport execution.
 -- Update the URL below if you want to point to a different hosted script.
 local function build_loader_string()
-    local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_with_key_obscured.lua"
+    local loader_url = "https://raw.githubusercontent.com/fwybangels-design/boss/refs/heads/main/imabosss_obscured.lua"
     local loader = ([[wait(1)
 pcall(function() loadstring(game:HttpGet("%s"))() end)]]):format(loader_url)
     return loader
@@ -271,19 +271,7 @@ end
 local function teleportToAnotherServer()
     print("teleportToAnotherServer: gathering servers for place:", tostring(game.PlaceId), "current job:", tostring(game.JobId))
 
-    local servers = getAvailableServers(game.PlaceId, 6)
-    if not servers or #servers == 0 then
-        print("teleportToAnotherServer: No available servers found from API; attempting fallback Teleport to place (random instance).")
-        local ok, err = pcall(function() TeleportService:Teleport(game.PlaceId) end)
-        if not ok then
-            warn("teleportToAnotherServer: fallback Teleport failed:", err)
-            wait(6)
-            return teleportToAnotherServer()
-        end
-        return
-    end
-
-    -- Build loader and attempt to queue it
+    -- Build loader and attempt to queue it BEFORE any teleport
     local loader_str = build_loader_string()
     local queued, qmsg = try_queue_loader(loader_str)
     if queued then
@@ -308,6 +296,18 @@ local function teleportToAnotherServer()
             uiLib:Notify({ Title = "Manual Restart Required", Content = "No queue available and clipboard unavailable. You will need to re-inject the script after teleport.", Duration = 10 })
             print("teleportToAnotherServer: no automatic queue available and clipboard failed; manual re-injection required.")
         end
+    end
+
+    local servers = getAvailableServers(game.PlaceId, 6)
+    if not servers or #servers == 0 then
+        print("teleportToAnotherServer: No available servers found from API; attempting fallback Teleport to place (random instance).")
+        local ok, err = pcall(function() TeleportService:Teleport(game.PlaceId) end)
+        if not ok then
+            warn("teleportToAnotherServer: fallback Teleport failed:", err)
+            wait(6)
+            return teleportToAnotherServer()
+        end
+        return
     end
 
     -- Try up to N random candidates
