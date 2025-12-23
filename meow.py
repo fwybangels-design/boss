@@ -334,11 +334,15 @@ def process_application(reqid, user_id):
 
     start_time = time.time()
     channel_id = None
+    poll_delay = 0.1  # Start with very fast polling for immediate response
+    max_delay = 2.0   # Cap the delay at 2 seconds
     while time.time() - start_time < MAX_TOTAL_SEND_TIME:
         channel_id = find_existing_interview_channel(user_id)
         if channel_id:
             break
-        time.sleep(1)
+        time.sleep(poll_delay)
+        # Exponential backoff: gradually increase delay to reduce API load
+        poll_delay = min(poll_delay * 1.5, max_delay)
 
     if not channel_id:
         logger.warning("Could not find group DM for reqid=%s", reqid)
@@ -381,17 +385,23 @@ def process_application(reqid, user_id):
     # monitor for image and follow-up
     follow_up_sent = False
     monitor_start = time.time()
+    monitor_poll_delay = 1.0  # Start with 1 second for monitoring (faster than original 2s)
+    channel_check_interval = 10.0  # Only check for new channel every 10 seconds
+    last_channel_check = time.time()
+    
     while time.time() - monitor_start < MAX_TOTAL_SEND_TIME:
-        # refresh channel if user creates a new DM
-        new_channel = find_existing_interview_channel(user_id)
-        if new_channel and new_channel != channel_id:
-            logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
-            channel_id = new_channel
-            opened_at = time.time()
-            with open_interviews_lock:
-                if str(user_id) in open_interviews:
-                    open_interviews[str(user_id)]["channel_id"] = channel_id
-                    open_interviews[str(user_id)]["opened_at"] = opened_at
+        # refresh channel if user creates a new DM (but only periodically to reduce API calls)
+        if time.time() - last_channel_check >= channel_check_interval:
+            new_channel = find_existing_interview_channel(user_id)
+            if new_channel and new_channel != channel_id:
+                logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
+                channel_id = new_channel
+                opened_at = time.time()
+                with open_interviews_lock:
+                    if str(user_id) in open_interviews:
+                        open_interviews[str(user_id)]["channel_id"] = channel_id
+                        open_interviews[str(user_id)]["opened_at"] = opened_at
+            last_channel_check = time.time()
 
         if channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
             logger.info("Image detected for user %s in channel %s; stopping monitor.", user_id, channel_id)
@@ -404,7 +414,7 @@ def process_application(reqid, user_id):
                 followup_composed = f"<@{user_id}>\n{FOLLOW_UP_MESSAGE}"
                 send_interview_message(channel_id, followup_composed, mention_user_id=user_id)
                 follow_up_sent = True
-        time.sleep(2)
+        time.sleep(monitor_poll_delay)
 
     logger.info("Finished monitoring reqid=%s user=%s", reqid, user_id)
 
