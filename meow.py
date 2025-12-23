@@ -49,6 +49,18 @@ FRIEND_POLL_INTERVAL = 2
 SEND_RETRY_DELAY = 1
 MAX_TOTAL_SEND_TIME = 180
 
+# Optimized polling configuration for faster application opening
+# Start with fast polling (0.1s) for immediate response in typical cases
+# Use 2.0x backoff multiplier to quickly reduce API load while still being responsive
+# Cap at 2.0s to balance responsiveness with API efficiency
+INITIAL_POLL_DELAY = 0.1  # Initial delay provides near-instant response (100ms)
+MAX_POLL_DELAY = 2.0  # Maximum delay balances API load with reasonable retry speed
+BACKOFF_MULTIPLIER = 2.0  # Aggressive backoff for efficient API usage (0.1→0.2→0.4→0.8→1.6→2.0s)
+
+# Monitoring loop configuration  
+MONITOR_POLL_INTERVAL = 1.0  # 1 second provides responsive image detection without excessive API calls
+CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it's a rare edge case
+
 # in-memory state only (matches original behavior)
 seen_reqs = set()
 open_interviews = {}
@@ -334,11 +346,14 @@ def process_application(reqid, user_id):
 
     start_time = time.time()
     channel_id = None
+    poll_delay = INITIAL_POLL_DELAY
     while time.time() - start_time < MAX_TOTAL_SEND_TIME:
         channel_id = find_existing_interview_channel(user_id)
         if channel_id:
             break
-        time.sleep(1)
+        time.sleep(poll_delay)
+        # Exponential backoff: gradually increase delay to reduce API load
+        poll_delay = min(poll_delay * BACKOFF_MULTIPLIER, MAX_POLL_DELAY)
 
     if not channel_id:
         logger.warning("Could not find group DM for reqid=%s", reqid)
@@ -381,30 +396,39 @@ def process_application(reqid, user_id):
     # monitor for image and follow-up
     follow_up_sent = False
     monitor_start = time.time()
-    while time.time() - monitor_start < MAX_TOTAL_SEND_TIME:
-        # refresh channel if user creates a new DM
-        new_channel = find_existing_interview_channel(user_id)
-        if new_channel and new_channel != channel_id:
-            logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
-            channel_id = new_channel
-            opened_at = time.time()
-            with open_interviews_lock:
-                if str(user_id) in open_interviews:
-                    open_interviews[str(user_id)]["channel_id"] = channel_id
-                    open_interviews[str(user_id)]["opened_at"] = opened_at
+    last_channel_check = monitor_start
+    
+    while True:
+        current_time = time.time()
+        if current_time - monitor_start >= MAX_TOTAL_SEND_TIME:
+            break
+            
+        # refresh channel if user creates a new DM (but only periodically to reduce API calls)
+        if current_time - last_channel_check >= CHANNEL_REFRESH_INTERVAL:
+            new_channel = find_existing_interview_channel(user_id)
+            if new_channel and new_channel != channel_id:
+                logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
+                channel_id = new_channel
+                # Use fresh timestamp for accuracy when channel switches
+                opened_at = time.time()
+                with open_interviews_lock:
+                    if str(user_id) in open_interviews:
+                        open_interviews[str(user_id)]["channel_id"] = channel_id
+                        open_interviews[str(user_id)]["opened_at"] = opened_at
+            last_channel_check = current_time
 
         if channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
             logger.info("Image detected for user %s in channel %s; stopping monitor.", user_id, channel_id)
             break
 
-        elapsed = time.time() - monitor_start
+        elapsed = current_time - monitor_start
         if not follow_up_sent and elapsed >= FOLLOW_UP_DELAY:
             # re-check immediately before sending follow-up to reduce races
             if not channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
                 followup_composed = f"<@{user_id}>\n{FOLLOW_UP_MESSAGE}"
                 send_interview_message(channel_id, followup_composed, mention_user_id=user_id)
                 follow_up_sent = True
-        time.sleep(2)
+        time.sleep(MONITOR_POLL_INTERVAL)
 
     logger.info("Finished monitoring reqid=%s user=%s", reqid, user_id)
 
