@@ -52,10 +52,10 @@ MAX_TOTAL_SEND_TIME = 180
 # Optimized polling configuration for faster application opening
 INITIAL_POLL_DELAY = 0.1  # Start with very fast polling for immediate response
 MAX_POLL_DELAY = 2.0  # Cap the delay at 2 seconds
-BACKOFF_MULTIPLIER = 1.5  # Exponential backoff multiplier
+BACKOFF_MULTIPLIER = 2.0  # Exponential backoff multiplier for efficient API usage
 
 # Monitoring loop configuration
-MONITOR_POLL_INTERVAL = 1.0  # Polling interval for checking images (faster than original 2s)
+MONITOR_POLL_INTERVAL = 1.0  # Polling interval for checking images in active interviews
 CHANNEL_REFRESH_INTERVAL = 10.0  # How often to check for new channels (reduces API calls)
 
 # in-memory state only (matches original behavior)
@@ -393,27 +393,31 @@ def process_application(reqid, user_id):
     # monitor for image and follow-up
     follow_up_sent = False
     monitor_start = time.time()
-    last_channel_check = time.time()
+    last_channel_check = monitor_start
     
-    while time.time() - monitor_start < MAX_TOTAL_SEND_TIME:
+    while True:
+        current_time = time.time()
+        if current_time - monitor_start >= MAX_TOTAL_SEND_TIME:
+            break
+            
         # refresh channel if user creates a new DM (but only periodically to reduce API calls)
-        if time.time() - last_channel_check >= CHANNEL_REFRESH_INTERVAL:
+        if current_time - last_channel_check >= CHANNEL_REFRESH_INTERVAL:
             new_channel = find_existing_interview_channel(user_id)
             if new_channel and new_channel != channel_id:
                 logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
                 channel_id = new_channel
-                opened_at = time.time()
+                opened_at = current_time
                 with open_interviews_lock:
                     if str(user_id) in open_interviews:
                         open_interviews[str(user_id)]["channel_id"] = channel_id
                         open_interviews[str(user_id)]["opened_at"] = opened_at
-            last_channel_check = time.time()
+            last_channel_check = current_time
 
         if channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
             logger.info("Image detected for user %s in channel %s; stopping monitor.", user_id, channel_id)
             break
 
-        elapsed = time.time() - monitor_start
+        elapsed = current_time - monitor_start
         if not follow_up_sent and elapsed >= FOLLOW_UP_DELAY:
             # re-check immediately before sending follow-up to reduce races
             if not channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
