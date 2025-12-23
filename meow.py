@@ -50,13 +50,16 @@ SEND_RETRY_DELAY = 1
 MAX_TOTAL_SEND_TIME = 180
 
 # Optimized polling configuration for faster application opening
-INITIAL_POLL_DELAY = 0.1  # Start with very fast polling for immediate response
-MAX_POLL_DELAY = 2.0  # Cap the delay at 2 seconds
-BACKOFF_MULTIPLIER = 2.0  # Exponential backoff multiplier for efficient API usage
+# Start with fast polling (0.1s) for immediate response in typical cases
+# Use 2.0x backoff multiplier to quickly reduce API load while still being responsive
+# Cap at 2.0s to balance responsiveness with API efficiency
+INITIAL_POLL_DELAY = 0.1  # Initial delay provides near-instant response (100ms)
+MAX_POLL_DELAY = 2.0  # Maximum delay balances API load with reasonable retry speed
+BACKOFF_MULTIPLIER = 2.0  # Aggressive backoff for efficient API usage (0.1→0.2→0.4→0.8→1.6→2.0s)
 
-# Monitoring loop configuration
-MONITOR_POLL_INTERVAL = 1.0  # Polling interval for checking images in active interviews
-CHANNEL_REFRESH_INTERVAL = 10.0  # How often to check for new channels (reduces API calls)
+# Monitoring loop configuration  
+MONITOR_POLL_INTERVAL = 1.0  # 1 second provides responsive image detection without excessive API calls
+CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it's a rare edge case
 
 # in-memory state only (matches original behavior)
 seen_reqs = set()
@@ -406,7 +409,8 @@ def process_application(reqid, user_id):
             if new_channel and new_channel != channel_id:
                 logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
                 channel_id = new_channel
-                opened_at = current_time
+                # Use fresh timestamp for accuracy when channel switches
+                opened_at = time.time()
                 with open_interviews_lock:
                     if str(user_id) in open_interviews:
                         open_interviews[str(user_id)]["channel_id"] = channel_id
