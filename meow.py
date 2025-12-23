@@ -49,6 +49,15 @@ FRIEND_POLL_INTERVAL = 2
 SEND_RETRY_DELAY = 1
 MAX_TOTAL_SEND_TIME = 180
 
+# Optimized polling configuration for faster application opening
+INITIAL_POLL_DELAY = 0.1  # Start with very fast polling for immediate response
+MAX_POLL_DELAY = 2.0  # Cap the delay at 2 seconds
+BACKOFF_MULTIPLIER = 1.5  # Exponential backoff multiplier
+
+# Monitoring loop configuration
+MONITOR_POLL_INTERVAL = 1.0  # Polling interval for checking images (faster than original 2s)
+CHANNEL_REFRESH_INTERVAL = 10.0  # How often to check for new channels (reduces API calls)
+
 # in-memory state only (matches original behavior)
 seen_reqs = set()
 open_interviews = {}
@@ -334,15 +343,14 @@ def process_application(reqid, user_id):
 
     start_time = time.time()
     channel_id = None
-    poll_delay = 0.1  # Start with very fast polling for immediate response
-    max_delay = 2.0   # Cap the delay at 2 seconds
+    poll_delay = INITIAL_POLL_DELAY
     while time.time() - start_time < MAX_TOTAL_SEND_TIME:
         channel_id = find_existing_interview_channel(user_id)
         if channel_id:
             break
         time.sleep(poll_delay)
         # Exponential backoff: gradually increase delay to reduce API load
-        poll_delay = min(poll_delay * 1.5, max_delay)
+        poll_delay = min(poll_delay * BACKOFF_MULTIPLIER, MAX_POLL_DELAY)
 
     if not channel_id:
         logger.warning("Could not find group DM for reqid=%s", reqid)
@@ -385,13 +393,11 @@ def process_application(reqid, user_id):
     # monitor for image and follow-up
     follow_up_sent = False
     monitor_start = time.time()
-    monitor_poll_delay = 1.0  # Start with 1 second for monitoring (faster than original 2s)
-    channel_check_interval = 10.0  # Only check for new channel every 10 seconds
     last_channel_check = time.time()
     
     while time.time() - monitor_start < MAX_TOTAL_SEND_TIME:
         # refresh channel if user creates a new DM (but only periodically to reduce API calls)
-        if time.time() - last_channel_check >= channel_check_interval:
+        if time.time() - last_channel_check >= CHANNEL_REFRESH_INTERVAL:
             new_channel = find_existing_interview_channel(user_id)
             if new_channel and new_channel != channel_id:
                 logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
@@ -414,7 +420,7 @@ def process_application(reqid, user_id):
                 followup_composed = f"<@{user_id}>\n{FOLLOW_UP_MESSAGE}"
                 send_interview_message(channel_id, followup_composed, mention_user_id=user_id)
                 follow_up_sent = True
-        time.sleep(monitor_poll_delay)
+        time.sleep(MONITOR_POLL_INTERVAL)
 
     logger.info("Finished monitoring reqid=%s user=%s", reqid, user_id)
 
