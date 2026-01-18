@@ -368,28 +368,7 @@ def approve_application(request_id):
     except Exception:
         logger.exception("Exception approving application")
 
-def get_pending_friend_requests():
-    url = "https://discord.com/api/v9/users/@me/relationships"
-    headers = HEADERS_TEMPLATE.copy()
-    headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
-        _log_resp_short("get_pending_friend_requests", resp)
-        if getattr(resp, "status_code", None) == 429:
-            data = {}
-            try:
-                data = resp.json()
-            except Exception:
-                pass
-            retry_after = float(data.get("retry_after", 2))
-            time.sleep(retry_after)
-            return set()
-        relationships = resp.json() if getattr(resp, "status_code", None) == 200 else []
-        pending = {str(item["id"]) for item in relationships if item.get("type") == 3 and "id" in item}
-        return pending
-    except Exception:
-        logger.exception("Exception in get_pending_friend_requests")
-        return set()
+
 
 def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
@@ -525,16 +504,14 @@ def process_application(reqid, user_id):
 
     logger.info("Finished monitoring reqid=%s user=%s", reqid, user_id)
 
-def friend_request_poller():
-    logger.info("Started friend request poller.")
+def approval_poller():
+    logger.info("Started approval poller.")
     while True:
         with open_interviews_lock:
             keys = list(open_interviews.keys())
         if not keys:
             time.sleep(FRIEND_POLL_INTERVAL)
             continue
-
-        pending_friends = get_pending_friend_requests()
 
         with open_interviews_lock:
             to_remove = []
@@ -597,7 +574,7 @@ def main():
     if not SERVER_INVITE_LINK:
         logger.warning("SERVER_INVITE_LINK not configured. Notifications to added users will be skipped.")
     
-    poller_thread = threading.Thread(target=friend_request_poller, daemon=True)
+    poller_thread = threading.Thread(target=approval_poller, daemon=True)
     poller_thread.start()
     logger.info("Starting main poller loop.")
     while True:
