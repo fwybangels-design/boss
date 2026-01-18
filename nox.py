@@ -47,29 +47,40 @@ def add_dmed_user(user_id, username, discriminator, bot_index):
     """Record a user that has been DMed"""
     init_user_tracking()
     
-    # Read existing users to check if already exists
-    existing_users = {}
+    user_id_str = str(user_id)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    user_line = f"{user_id_str}|{username}|{discriminator}|{timestamp}|{bot_index}"
+    
+    # Read existing users to check if user already exists
+    existing_lines = []
+    user_exists = False
+    
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, 'r') as f:
             for line in f:
-                if line.startswith('#') or not line.strip():
+                if line.startswith('#'):
+                    existing_lines.append(line.rstrip('\n'))
                     continue
+                if not line.strip():
+                    continue
+                    
                 parts = line.strip().split('|')
-                if len(parts) >= 5:
-                    existing_users[parts[0]] = line.strip()
+                if len(parts) >= 1 and parts[0] == user_id_str:
+                    # Replace existing entry
+                    existing_lines.append(user_line)
+                    user_exists = True
+                else:
+                    existing_lines.append(line.rstrip('\n'))
     
-    # Add or update user
-    user_id_str = str(user_id)
-    timestamp = datetime.now(timezone.utc).isoformat()
-    user_line = f"{user_id_str}|{username}|{discriminator}|{timestamp}|{bot_index}\n"
-    
-    # Write back all users
-    with open(USERS_FILE, 'w') as f:
-        f.write("# Format: user_id|username|discriminator|timestamp|bot_index\n")
-        for uid, line in existing_users.items():
-            if uid != user_id_str:
+    # If user doesn't exist, append to file (more efficient for new users)
+    if not user_exists:
+        with open(USERS_FILE, 'a') as f:
+            f.write(user_line + '\n')
+    else:
+        # User exists, rewrite file with updated entry
+        with open(USERS_FILE, 'w') as f:
+            for line in existing_lines:
                 f.write(line + '\n')
-        f.write(user_line)
 
 def get_all_dmed_users():
     """Retrieve all users that have been DMed with their bot index"""
@@ -83,11 +94,15 @@ def get_all_dmed_users():
                     continue
                 parts = line.strip().split('|')
                 if len(parts) >= 5:
-                    user_id = parts[0]
-                    username = parts[1]
-                    discriminator = parts[2]
-                    bot_index = int(parts[4])
-                    users.append((user_id, username, discriminator, bot_index))
+                    try:
+                        user_id = parts[0]
+                        username = parts[1]
+                        discriminator = parts[2]
+                        bot_index = int(parts[4])
+                        users.append((user_id, username, discriminator, bot_index))
+                    except (ValueError, IndexError):
+                        # Skip malformed lines
+                        continue
     
     return users
 
@@ -168,9 +183,10 @@ class DMBot:
         save_config(self.config)
         return True
     
-    async def send_dm_to_user(self, user_id, message=None, bot_client=None):
+    async def send_dm_to_user(self, user_id, message=None, bot_client=None, bot_index=None):
         """Send a DM to a user by ID using specified bot client or current bot"""
         bot_to_use = bot_client if bot_client else self.current_bot
+        index_to_use = bot_index if bot_index is not None else self.config["current_bot_index"]
         
         if not bot_to_use:
             print(f"{Colors.RED}[!] No bot client available{Colors.ENDC}")
@@ -183,12 +199,15 @@ class DMBot:
             user = await bot_to_use.fetch_user(int(user_id))
             await user.send(message)
             
-            # Track the DM (use the bot index from the bot_client or current)
+            # Track the DM with the correct bot index
             username = user.name
             discriminator = get_user_discriminator(user)
-            add_dmed_user(user_id, username, discriminator, self.config["current_bot_index"])
+            add_dmed_user(user_id, username, discriminator, index_to_use)
             
-            self.increment_dm_count()
+            # Only increment DM count if using the current bot
+            if bot_client is None:
+                self.increment_dm_count()
+            
             print(f"{Colors.GREEN}[✓] Sent DM to {username} (ID: {user_id}){Colors.ENDC}")
             return True
         except discord.Forbidden:
