@@ -6,10 +6,11 @@ A Discord bot that automatically DMs users when they join a server and supports 
 
 - **Automatic DM on Join**: Sends a customizable message to users when they join the server
 - **Token Rotation**: Automatically rotates between multiple bot tokens after a configurable number of DMs (default: 500)
-- **Mass DM**: Send messages to all previously contacted users, even if the server is deleted
+- **Mass DM with Bot Tracking**: Send messages to all previously contacted users using the SAME bot that originally DMed them (important for users not in server)
+- **Separate Messages**: Different messages for join DM vs mass DM
 - **Owner-Only Commands**: All commands are restricted to the configured owner ID
-- **Persistent Tracking**: Uses SQLite database to track all DMed users
-- **CLI Menu Interface**: Easy-to-use command-line interface for configuration and control
+- **Simple Text File Tracking**: Uses simple .txt files to track all DMed users (no database setup needed!)
+- **Colorful CLI Menu**: Eye-catching menu with colors and emojis
 - **DM by User ID**: Can DM users even if they're not in the server
 
 ## Installation
@@ -26,21 +27,22 @@ python nox.py
 
 ## Configuration
 
-When you first run the bot, you'll be presented with a menu:
+When you first run the bot, you'll be presented with a colorful menu:
 
 ```
-==================================================
-     DISCORD DM BOT - CONTROL PANEL
-==================================================
+============================================================
+          🤖 DISCORD DM BOT - CONTROL PANEL 🤖
+============================================================
 1. Configure Bot Tokens
 2. Configure Owner ID
-3. Set DM Message
-4. Set DMs per Bot (rotation threshold)
-5. View Statistics
-6. Start Bot
-7. Mass DM All Users (Manual)
-8. Exit
-==================================================
+3. Set DM on Join Message
+4. Set Mass DM Message
+5. Set DMs per Bot (rotation threshold)
+6. View Statistics
+7. Start Bot
+8. Mass DM All Users (Manual)
+9. Exit
+============================================================
 ```
 
 ### Initial Setup
@@ -54,14 +56,18 @@ When you first run the bot, you'll be presented with a menu:
    - Enter your Discord user ID
    - Only this user can use bot commands
 
-3. **Set DM Message** (Option 3)
-   - Customize the message sent to users when they join
+3. **Set DM on Join Message** (Option 3)
+   - Customize the message sent to users when they join the server
 
-4. **Set DMs per Bot** (Option 4)
+4. **Set Mass DM Message** (Option 4)
+   - Set a separate message for mass DMs (optional)
+   - Leave empty to use the same as the join message
+
+5. **Set DMs per Bot** (Option 5)
    - Configure how many DMs to send before rotating to next token
    - Default: 500 (adjust based on your risk tolerance)
 
-5. **Start Bot** (Option 6)
+6. **Start Bot** (Option 7)
    - Once configured, start the bot to begin monitoring
 
 ## Bot Commands
@@ -77,14 +83,14 @@ Send a DM to a specific user by their Discord ID.
 ```
 
 ### `!massdm [message]`
-Send a mass DM to all users that have been previously DMed by the bot.
+Send a mass DM to all users that have been previously DMed by the bot. **Each user will be contacted by the same bot that originally DMed them** - this is crucial because a bot can only DM users it shares a server with OR has previously DMed.
 
 **Example:**
 ```
 !massdm Important announcement for all members!
 ```
 
-If no message is provided, it uses the default DM message.
+If no message is provided, it uses the mass DM message (or DM on join message if not set separately).
 
 ### `!stats`
 Display bot statistics including:
@@ -122,31 +128,49 @@ Change the default DM message that is sent when users join.
 
 ### DM Tracking
 
-All DMed users are stored in `dm_tracking.db` (SQLite database) with:
+All DMed users are stored in `dmed_users.txt` (simple text file) with:
 - User ID
 - Username
 - Discriminator
 - Timestamp of DM
-- Which bot token was used
+- Which bot token was used (bot index)
+
+**Format:** `user_id|username|discriminator|timestamp|bot_index`
 
 This allows you to:
 - Mass DM users even after they leave the server
-- Track all interactions
-- Maintain a persistent list of contacted users
+- Each user gets DMed by the SAME bot that originally contacted them
+- Track all interactions in a simple, readable text file
+- No database setup required!
 
 ### Automatic DM on Join
 
 When a user joins the server:
 1. Bot detects the `on_member_join` event
-2. Sends the configured DM message
-3. Records the user in the database
+2. Sends the configured DM on join message
+3. Records the user in the text file with the bot index
 4. Increments the DM counter
 5. Rotates to next token if threshold is reached
 
+### Mass DM with Bot Tracking
+
+When you mass DM all users:
+1. Bot reads all users from `dmed_users.txt`
+2. Groups users by which bot originally DMed them
+3. Logs in all bot tokens that are needed
+4. Each user is DMed by their original bot
+5. This ensures the bot can DM users even if they left the server
+
+**Why this matters:** A Discord bot can only DM users that either:
+- Share a server with the bot, OR
+- Have been previously DMed by that specific bot
+
+By tracking which bot DMed which user, we ensure mass DMs work correctly!
+
 ## Files Created
 
-- `bot_config.json` - Stores bot tokens, owner ID, and configuration
-- `dm_tracking.db` - SQLite database tracking all DMed users
+- `bot_config.json` - Stores bot tokens, owner ID, messages, and configuration
+- `dmed_users.txt` - Simple text file tracking all DMed users
 
 **Note:** These files are automatically added to `.gitignore` to prevent accidentally committing sensitive data.
 
