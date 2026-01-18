@@ -13,10 +13,6 @@ TOKEN = ""
 GUILD_ID = "1460863243990859851"
 OWN_USER_ID = "1425093130813968395"
 
-# IDs of the 2 people that applicants should add
-USER_TO_ADD_1 = ""  # Set this to the first user's Discord ID
-USER_TO_ADD_2 = ""  # Set this to the second user's Discord ID
-
 # Server invite link to send to the 2 users after approval
 SERVER_INVITE_LINK = ""  # Set this to your Discord server invite link (e.g., "https://discord.gg/example")
 
@@ -28,13 +24,9 @@ FOLLOW_UP_DELAY = 60  # seconds
 FOLLOW_UP_MESSAGE = ("-# Please upload the screenshot of you in the [Telegram channel](https://t.me/addlist/kb2V8807oMg1NGYx) so we can approve you.\n"
                      "-# If you've already uploaded it, give it a moment to appear.")
 
-# NEW: special reminder message when a user posts an image but hasn't added the 2 people yet
-ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add the 2 people (send friend requests) so we can accept you.\n"
+# NEW: special reminder message when a user posts an image but hasn't added 2 people to the group DM yet
+ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add 2 people to this group DM so we can accept you.\n"
                           "-# uploading a screenshot alone isn't enough. If you've already added them, give it a moment to appear.")
-
-# Message sent to the 2 people after applicant is approved
-# Placeholders: {user1}, {user2}, {invite_link}
-NOTIFY_USERS_MESSAGE_TEMPLATE = "<@{user1}> <@{user2}> join {invite_link} so i can let u in"
 
 COOKIES = {
     # ...your cookies here...
@@ -178,6 +170,45 @@ def find_existing_interview_channel(user_id):
         logger.exception("Exception finding interview channel")
         return None
 
+def get_channel_recipients(channel_id):
+    """Get the list of recipient user IDs in a group DM channel."""
+    url = f"https://discord.com/api/v9/channels/{channel_id}"
+    headers = HEADERS_TEMPLATE.copy()
+    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
+    headers.pop("content-type", None)
+    try:
+        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        _log_resp_short("get_channel_recipients", resp)
+        if resp and resp.status_code == 200:
+            channel_data = resp.json()
+            recipients = channel_data.get("recipients", [])
+            recipient_ids = [u.get("id") for u in recipients if isinstance(u, dict) and "id" in u]
+            return recipient_ids
+        return []
+    except Exception:
+        logger.exception("Exception getting channel recipients")
+        return []
+
+def check_two_people_added(channel_id, applicant_user_id):
+    """
+    Check if the applicant has added 2 people to the group DM.
+    Returns (bool, list of added user IDs excluding bot and applicant).
+    """
+    recipients = get_channel_recipients(channel_id)
+    if not recipients:
+        return False, []
+    
+    # Filter out the bot and the applicant
+    added_users = [
+        uid for uid in recipients 
+        if str(uid) != str(OWN_USER_ID) and str(uid) != str(applicant_user_id)
+    ]
+    
+    # Need at least 2 people added
+    has_two_people = len(added_users) >= 2
+    return has_two_people, added_users
+
+
 def message_already_sent(channel_id, content_without_mention, mention_user_id=None, min_ts=0.0):
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
     headers = HEADERS_TEMPLATE.copy()
@@ -270,27 +301,27 @@ def send_interview_message(channel_id, message, mention_user_id=None):
         logger.exception("Exception sending message")
         return False
 
-def notify_added_users(applicant_user_id):
+def notify_added_users(applicant_user_id, channel_id):
     """
-    After an applicant is approved, notify the 2 users that were added by sending them
-    a message asking them to join the server. Creates a group DM with both users if needed.
+    After an applicant is approved, notify the users that were added to the group DM
+    by sending them a message asking them to join the server.
     """
-    if not USER_TO_ADD_1 or not USER_TO_ADD_2 or not SERVER_INVITE_LINK:
-        logger.error("USER_TO_ADD_1, USER_TO_ADD_2, or SERVER_INVITE_LINK not configured. Cannot send notification. Please configure these values.")
+    if not SERVER_INVITE_LINK:
+        logger.error("SERVER_INVITE_LINK not configured. Cannot send notification. Please configure this value.")
         return
     
-    # Find or create DM channel with the applicant to send the follow-up message
-    channel_id = find_existing_interview_channel(applicant_user_id)
-    if not channel_id:
-        logger.warning("Could not find DM channel with applicant %s to send follow-up", applicant_user_id)
+    # Get the list of users who were added to the group DM
+    _, added_users = check_two_people_added(channel_id, applicant_user_id)
+    if len(added_users) < 2:
+        logger.warning("Less than 2 people added to group DM for applicant %s, skipping notification", applicant_user_id)
         return
+    
+    # Take the first 2 users who were added
+    user1 = added_users[0]
+    user2 = added_users[1]
     
     # Send message mentioning the 2 users with the server invite
-    message = NOTIFY_USERS_MESSAGE_TEMPLATE.format(
-        user1=USER_TO_ADD_1,
-        user2=USER_TO_ADD_2,
-        invite_link=SERVER_INVITE_LINK
-    )
+    message = f"<@{user1}> <@{user2}> join {SERVER_INVITE_LINK} so i can let u in"
     
     # We need to send this message with allowed_mentions for both users
     headers = HEADERS_TEMPLATE.copy()
@@ -301,14 +332,14 @@ def notify_added_users(applicant_user_id):
         "nonce": make_nonce(),
         "tts": False,
         "flags": 0,
-        "allowed_mentions": {"parse": [], "users": [str(USER_TO_ADD_1), str(USER_TO_ADD_2)]}
+        "allowed_mentions": {"parse": [], "users": [str(user1), str(user2)]}
     }
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
     try:
         resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
         _log_resp_short(f"notify_added_users to {channel_id}", resp)
         if getattr(resp, "status_code", None) in (200, 201):
-            logger.info("Sent notification to users %s and %s in channel %s", USER_TO_ADD_1, USER_TO_ADD_2, channel_id)
+            logger.info("Sent notification to users %s and %s in channel %s", user1, user2, channel_id)
         else:
             logger.warning("Failed to send notification status=%s", getattr(resp, "status_code", "N/A"))
     except Exception:
@@ -509,15 +540,15 @@ def friend_request_poller():
                 if not reqid or not channel_id:
                     continue
                 
-                # Check if applicant has sent friend request to the bot
-                has_pending_friend = user_id in pending_friends
+                # Check if 2 people have been added to the group DM
+                has_two_people, added_users = check_two_people_added(channel_id, user_id)
                 
                 has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
-                logger.info("FRIEND POLLER: user=%s pending_friend=%s has_image=%s", 
-                           user_id, has_pending_friend, has_image)
+                logger.info("FRIEND POLLER: user=%s has_two_people=%s has_image=%s added_users=%s", 
+                           user_id, has_two_people, has_image, len(added_users))
 
-                # NEW: If image present but no friend request, send the "add 2 people" reminder once
-                if has_image and not has_pending_friend:
+                # NEW: If image present but not 2 people added, send the "add 2 people" reminder once
+                if has_image and not has_two_people:
                     with add_two_people_reminded_lock:
                         if user_id not in add_two_people_reminded:
                             # improved sending logic: log attempt, check send result, only mark on success
@@ -534,14 +565,14 @@ def friend_request_poller():
                             else:
                                 logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
 
-                # Approve when friend request is present AND image is uploaded
-                if has_pending_friend and has_image:
+                # Approve when 2 people added AND image is uploaded
+                if has_two_people and has_image:
                     logger.info("Approving reqid=%s for user=%s", reqid, user_id)
                     approve_application(reqid)
                     
                     # Send notification to the 2 added users after approval
                     try:
-                        notify_added_users(user_id)
+                        notify_added_users(user_id, channel_id)
                     except Exception:
                         logger.exception("Exception while notifying added users for %s", user_id)
                     
@@ -557,8 +588,6 @@ def friend_request_poller():
 
 def main():
     # Validate configuration at startup
-    if not USER_TO_ADD_1 or not USER_TO_ADD_2:
-        logger.warning("USER_TO_ADD_1 and/or USER_TO_ADD_2 not configured. Notifications to added users will be skipped.")
     if not SERVER_INVITE_LINK:
         logger.warning("SERVER_INVITE_LINK not configured. Notifications to added users will be skipped.")
     
