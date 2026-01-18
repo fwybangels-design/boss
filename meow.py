@@ -198,10 +198,14 @@ def check_two_people_added(channel_id, applicant_user_id):
     if not recipients:
         return False, []
     
+    # Convert IDs to strings once for efficient comparison
+    own_id_str = str(OWN_USER_ID)
+    applicant_id_str = str(applicant_user_id)
+    
     # Filter out the bot and the applicant
     added_users = [
         uid for uid in recipients 
-        if str(uid) != str(OWN_USER_ID) and str(uid) != str(applicant_user_id)
+        if str(uid) != own_id_str and str(uid) != applicant_id_str
     ]
     
     # Need at least 2 people added
@@ -307,7 +311,7 @@ def notify_added_users(applicant_user_id, channel_id):
     by sending them a message asking them to join the server.
     """
     if not SERVER_INVITE_LINK:
-        logger.error("SERVER_INVITE_LINK not configured. Cannot send notification. Please configure this value.")
+        logger.warning("SERVER_INVITE_LINK not configured. Skipping notification to added users.")
         return
     
     # Get the list of users who were added to the group DM
