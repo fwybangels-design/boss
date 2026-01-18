@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 TOKEN = ""
 GUILD_ID = "1460863243990859851"
 OWN_USER_ID = "1425093130813968395"
+OWN_USER_ID_STR = str(OWN_USER_ID)  # Pre-convert for efficient string comparisons
 
 # Server invite link to send to the 2 users after approval
+# For security, consider using environment variables instead: os.environ.get("SERVER_INVITE_LINK", "")
 SERVER_INVITE_LINK = ""  # Set this to your Discord server invite link (e.g., "https://discord.gg/example")
 
 # Your current message content / followup text (kept as you asked)
@@ -175,6 +177,7 @@ def get_channel_recipients(channel_id):
     url = f"https://discord.com/api/v9/channels/{channel_id}"
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
+    # Remove content-type header for GET requests (not needed and may cause issues)
     headers.pop("content-type", None)
     try:
         resp = requests.get(url, headers=headers, cookies=COOKIES)
@@ -198,14 +201,13 @@ def check_two_people_added(channel_id, applicant_user_id):
     if not recipients:
         return False, []
     
-    # Convert IDs to strings once for efficient comparison
-    own_id_str = str(OWN_USER_ID)
+    # Convert applicant ID to string once for efficient comparison
     applicant_id_str = str(applicant_user_id)
     
     # Filter out the bot and the applicant
     added_users = [
         uid for uid in recipients 
-        if str(uid) != own_id_str and str(uid) != applicant_id_str
+        if str(uid) != OWN_USER_ID_STR and str(uid) != applicant_id_str
     ]
     
     # Need at least 2 people added
