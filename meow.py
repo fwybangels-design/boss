@@ -50,7 +50,7 @@ HEADERS_TEMPLATE = {
 }
 
 POLL_INTERVAL = 1
-FRIEND_POLL_INTERVAL = 2
+APPROVAL_POLL_INTERVAL = 0.5  # Reduced from 2s to 0.5s for faster approval detection when 2 people are added
 SEND_RETRY_DELAY = 1
 MAX_TOTAL_SEND_TIME = 180
 
@@ -510,7 +510,7 @@ def approval_poller():
         with open_interviews_lock:
             keys = list(open_interviews.keys())
         if not keys:
-            time.sleep(FRIEND_POLL_INTERVAL)
+            time.sleep(APPROVAL_POLL_INTERVAL)
             continue
 
         with open_interviews_lock:
@@ -527,7 +527,7 @@ def approval_poller():
                 has_two_people, added_users = check_two_people_added(channel_id, user_id)
                 
                 has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
-                logger.info("FRIEND POLLER: user=%s has_two_people=%s has_image=%s added_users=%s", 
+                logger.info("APPROVAL POLLER: user=%s has_two_people=%s has_image=%s added_users=%s", 
                            user_id, has_two_people, has_image, len(added_users))
 
                 # NEW: If image present but not 2 people added, send the "add 2 people" reminder once
@@ -567,7 +567,7 @@ def approval_poller():
                 # also clear reminder state if present
                 with add_two_people_reminded_lock:
                     add_two_people_reminded.discard(user_id)
-        time.sleep(FRIEND_POLL_INTERVAL)
+        time.sleep(APPROVAL_POLL_INTERVAL)
 
 def main():
     # Validate configuration at startup
