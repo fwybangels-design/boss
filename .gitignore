@@ -19,3 +19,7 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Bot configuration and data
+bot_config.json
+dm_tracking.db
