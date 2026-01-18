@@ -32,6 +32,10 @@ FOLLOW_UP_MESSAGE = ("-# Please upload the screenshot of you in the [Telegram ch
 ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add the 2 people (send friend requests) so we can accept you.\n"
                           "-# uploading a screenshot alone isn't enough. If you've already added them, give it a moment to appear.")
 
+# Message sent to the 2 people after applicant is approved
+# Placeholders: {user1}, {user2}, {invite_link}
+NOTIFY_USERS_MESSAGE_TEMPLATE = "<@{user1}> <@{user2}> join {invite_link} so i can let u in"
+
 COOKIES = {
     # ...your cookies here...
 }
@@ -272,7 +276,7 @@ def notify_added_users(applicant_user_id):
     a message asking them to join the server. Creates a group DM with both users if needed.
     """
     if not USER_TO_ADD_1 or not USER_TO_ADD_2 or not SERVER_INVITE_LINK:
-        logger.warning("USER_TO_ADD_1, USER_TO_ADD_2, or SERVER_INVITE_LINK not configured. Skipping notification.")
+        logger.error("USER_TO_ADD_1, USER_TO_ADD_2, or SERVER_INVITE_LINK not configured. Cannot send notification. Please configure these values.")
         return
     
     # Find or create DM channel with the applicant to send the follow-up message
@@ -282,7 +286,11 @@ def notify_added_users(applicant_user_id):
         return
     
     # Send message mentioning the 2 users with the server invite
-    message = f"<@{USER_TO_ADD_1}> <@{USER_TO_ADD_2}> join {SERVER_INVITE_LINK} so i can let u in"
+    message = NOTIFY_USERS_MESSAGE_TEMPLATE.format(
+        user1=USER_TO_ADD_1,
+        user2=USER_TO_ADD_2,
+        invite_link=SERVER_INVITE_LINK
+    )
     
     # We need to send this message with allowed_mentions for both users
     headers = HEADERS_TEMPLATE.copy()
@@ -548,6 +556,12 @@ def friend_request_poller():
         time.sleep(FRIEND_POLL_INTERVAL)
 
 def main():
+    # Validate configuration at startup
+    if not USER_TO_ADD_1 or not USER_TO_ADD_2:
+        logger.warning("USER_TO_ADD_1 and/or USER_TO_ADD_2 not configured. Notifications to added users will be skipped.")
+    if not SERVER_INVITE_LINK:
+        logger.warning("SERVER_INVITE_LINK not configured. Notifications to added users will be skipped.")
+    
     poller_thread = threading.Thread(target=friend_request_poller, daemon=True)
     poller_thread.start()
     logger.info("Starting main poller loop.")
