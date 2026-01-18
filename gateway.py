@@ -66,7 +66,6 @@ config = GatewayConfig()
 HEADERS_TEMPLATE = {
     "accept": "*/*",
     "accept-language": "en-US,en;q=0.9",
-    "authorization": "",  # Will be set dynamically
     "origin": "https://discord.com",
     "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
     "sec-ch-ua-mobile": "?0",
@@ -86,8 +85,6 @@ MAX_TOTAL_SEND_TIME = 180
 
 # in-memory state
 seen_reqs = set()
-open_interviews = {}
-open_interviews_lock = threading.Lock()
 seen_reqs_lock = threading.Lock()
 
 # Logging
