@@ -22,4 +22,4 @@ Thumbs.db
 
 # Bot configuration and data
 bot_config.json
-dm_tracking.db
+dmed_users.txt

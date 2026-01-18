@@ -1,71 +1,100 @@
 import discord
 from discord.ext import commands
-import sqlite3
 import asyncio
 import json
 import os
 from datetime import datetime, timezone
 
+# ANSI color codes for terminal
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 # ---------------------------
 # Configuration
 # ---------------------------
 CONFIG_FILE = "bot_config.json"
+USERS_FILE = "dmed_users.txt"
 
 # Default configuration structure
 DEFAULT_CONFIG = {
     "bot_tokens": [],  # List of bot tokens for rotation
     "owner_id": "",  # Discord owner user ID
     "dm_message": "Welcome! Thanks for joining the server!",
+    "mass_dm_message": "",  # Empty means use same as dm_message
     "dms_per_bot": 500,  # Number of DMs before rotating to next bot
     "current_bot_index": 0,
     "current_dm_count": 0
 }
 
 # ---------------------------
-# Database Setup
+# User Tracking (Text File)
 # ---------------------------
-def init_database():
-    """Initialize SQLite database for tracking DMed users"""
-    conn = sqlite3.connect('dm_tracking.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS dmed_users
-                 (user_id TEXT PRIMARY KEY, 
-                  username TEXT,
-                  discriminator TEXT,
-                  dm_timestamp TEXT,
-                  bot_index INTEGER)''')
-    conn.commit()
-    conn.close()
+def init_user_tracking():
+    """Initialize user tracking file if it doesn't exist"""
+    if not os.path.exists(USERS_FILE):
+        with open(USERS_FILE, 'w') as f:
+            f.write("# Format: user_id|username|discriminator|timestamp|bot_index\n")
 
 def add_dmed_user(user_id, username, discriminator, bot_index):
     """Record a user that has been DMed"""
-    conn = sqlite3.connect('dm_tracking.db')
-    c = conn.cursor()
-    c.execute('''INSERT OR REPLACE INTO dmed_users 
-                 (user_id, username, discriminator, dm_timestamp, bot_index)
-                 VALUES (?, ?, ?, ?, ?)''',
-              (str(user_id), username, discriminator, 
-               datetime.now(timezone.utc).isoformat(), bot_index))
-    conn.commit()
-    conn.close()
+    init_user_tracking()
+    
+    # Read existing users to check if already exists
+    existing_users = {}
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, 'r') as f:
+            for line in f:
+                if line.startswith('#') or not line.strip():
+                    continue
+                parts = line.strip().split('|')
+                if len(parts) >= 5:
+                    existing_users[parts[0]] = line.strip()
+    
+    # Add or update user
+    user_id_str = str(user_id)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    user_line = f"{user_id_str}|{username}|{discriminator}|{timestamp}|{bot_index}\n"
+    
+    # Write back all users
+    with open(USERS_FILE, 'w') as f:
+        f.write("# Format: user_id|username|discriminator|timestamp|bot_index\n")
+        for uid, line in existing_users.items():
+            if uid != user_id_str:
+                f.write(line + '\n')
+        f.write(user_line)
 
 def get_all_dmed_users():
-    """Retrieve all users that have been DMed"""
-    conn = sqlite3.connect('dm_tracking.db')
-    c = conn.cursor()
-    c.execute('SELECT user_id, username, discriminator FROM dmed_users')
-    users = c.fetchall()
-    conn.close()
+    """Retrieve all users that have been DMed with their bot index"""
+    init_user_tracking()
+    users = []
+    
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, 'r') as f:
+            for line in f:
+                if line.startswith('#') or not line.strip():
+                    continue
+                parts = line.strip().split('|')
+                if len(parts) >= 5:
+                    user_id = parts[0]
+                    username = parts[1]
+                    discriminator = parts[2]
+                    bot_index = int(parts[4])
+                    users.append((user_id, username, discriminator, bot_index))
+    
     return users
 
 def get_dm_count():
     """Get total number of users DMed"""
-    conn = sqlite3.connect('dm_tracking.db')
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM dmed_users')
-    count = c.fetchone()[0]
-    conn.close()
-    return count
+    users = get_all_dmed_users()
+    return len(users)
 
 # ---------------------------
 # Configuration Management
@@ -139,61 +168,96 @@ class DMBot:
         save_config(self.config)
         return True
     
-    async def send_dm_to_user(self, user_id, message=None):
-        """Send a DM to a user by ID"""
-        if not self.current_bot:
-            print("[!] No bot client available")
+    async def send_dm_to_user(self, user_id, message=None, bot_client=None):
+        """Send a DM to a user by ID using specified bot client or current bot"""
+        bot_to_use = bot_client if bot_client else self.current_bot
+        
+        if not bot_to_use:
+            print(f"{Colors.RED}[!] No bot client available{Colors.ENDC}")
             return False
         
         if message is None:
             message = self.config["dm_message"]
         
         try:
-            user = await self.current_bot.fetch_user(int(user_id))
+            user = await bot_to_use.fetch_user(int(user_id))
             await user.send(message)
             
-            # Track the DM
+            # Track the DM (use the bot index from the bot_client or current)
             username = user.name
             discriminator = get_user_discriminator(user)
             add_dmed_user(user_id, username, discriminator, self.config["current_bot_index"])
             
             self.increment_dm_count()
-            print(f"[✓] Sent DM to {username} (ID: {user_id})")
+            print(f"{Colors.GREEN}[✓] Sent DM to {username} (ID: {user_id}){Colors.ENDC}")
             return True
         except discord.Forbidden:
-            print(f"[!] Cannot send DM to user {user_id} (DMs disabled or blocked)")
+            print(f"{Colors.YELLOW}[!] Cannot send DM to user {user_id} (DMs disabled or blocked){Colors.ENDC}")
             return False
         except discord.NotFound:
-            print(f"[!] User {user_id} not found")
+            print(f"{Colors.YELLOW}[!] User {user_id} not found{Colors.ENDC}")
             return False
         except Exception as e:
-            print(f"[!] Error sending DM to {user_id}: {e}")
+            print(f"{Colors.RED}[!] Error sending DM to {user_id}: {e}{Colors.ENDC}")
             return False
     
-    async def mass_dm_all_users(self, message=None):
-        """Mass DM all previously contacted users"""
+    async def mass_dm_all_users(self, message=None, bot_clients_dict=None):
+        """Mass DM all previously contacted users using the SAME bot that originally DMed them"""
         users = get_all_dmed_users()
         
         if not users:
-            print("[!] No users to DM")
+            print(f"{Colors.YELLOW}[!] No users to DM{Colors.ENDC}")
             return
         
-        print(f"[*] Starting mass DM to {len(users)} users...")
+        # Use mass_dm_message if set, otherwise use dm_message
+        if message is None:
+            message = self.config.get("mass_dm_message", "") or self.config["dm_message"]
+        
+        print(f"{Colors.CYAN}[*] Starting mass DM to {len(users)} users...{Colors.ENDC}")
+        print(f"{Colors.CYAN}[*] Each user will be DMed by the same bot that originally contacted them{Colors.ENDC}")
         
         success_count = 0
         fail_count = 0
         
-        for user_id, username, discriminator in users:
-            result = await self.send_dm_to_user(user_id, message)
-            if result:
-                success_count += 1
-            else:
-                fail_count += 1
-            
-            # Small delay to avoid rate limiting
-            await asyncio.sleep(1)
+        # Group users by bot index
+        users_by_bot = {}
+        for user_id, username, discriminator, bot_index in users:
+            if bot_index not in users_by_bot:
+                users_by_bot[bot_index] = []
+            users_by_bot[bot_index].append((user_id, username, discriminator))
         
-        print(f"[✓] Mass DM complete: {success_count} success, {fail_count} failed")
+        # DM users grouped by their original bot
+        for bot_index, user_list in users_by_bot.items():
+            print(f"{Colors.CYAN}[*] Processing {len(user_list)} users with bot #{bot_index + 1}...{Colors.ENDC}")
+            
+            # Get the bot client for this index
+            bot_client = bot_clients_dict.get(bot_index) if bot_clients_dict else self.current_bot
+            
+            if not bot_client:
+                print(f"{Colors.RED}[!] Bot #{bot_index + 1} not available, skipping {len(user_list)} users{Colors.ENDC}")
+                fail_count += len(user_list)
+                continue
+            
+            for user_id, username, discriminator in user_list:
+                try:
+                    user = await bot_client.fetch_user(int(user_id))
+                    await user.send(message)
+                    success_count += 1
+                    print(f"{Colors.GREEN}[✓] Sent DM to {username} (ID: {user_id}) via bot #{bot_index + 1}{Colors.ENDC}")
+                except discord.Forbidden:
+                    print(f"{Colors.YELLOW}[!] Cannot DM {username} (DMs disabled){Colors.ENDC}")
+                    fail_count += 1
+                except discord.NotFound:
+                    print(f"{Colors.YELLOW}[!] User {username} not found{Colors.ENDC}")
+                    fail_count += 1
+                except Exception as e:
+                    print(f"{Colors.RED}[!] Error DMing {username}: {e}{Colors.ENDC}")
+                    fail_count += 1
+                
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(1)
+        
+        print(f"{Colors.GREEN}[✓] Mass DM complete: {success_count} success, {fail_count} failed{Colors.ENDC}")
 
 # Global bot manager instance
 bot_manager = DMBot()
@@ -305,28 +369,29 @@ def create_bot():
 # CLI Menu Interface
 # ---------------------------
 def print_menu():
-    """Display the main menu"""
-    print("\n" + "="*50)
-    print("     DISCORD DM BOT - CONTROL PANEL")
-    print("="*50)
-    print("1. Configure Bot Tokens")
-    print("2. Configure Owner ID")
-    print("3. Set DM Message")
-    print("4. Set DMs per Bot (rotation threshold)")
-    print("5. View Statistics")
-    print("6. Start Bot")
-    print("7. Mass DM All Users (Manual)")
-    print("8. Exit")
-    print("="*50)
+    """Display the main menu with colors"""
+    print(f"\n{Colors.CYAN}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.BOLD}{Colors.HEADER}          🤖 DISCORD DM BOT - CONTROL PANEL 🤖{Colors.ENDC}")
+    print(f"{Colors.CYAN}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.GREEN}1.{Colors.ENDC} {Colors.BOLD}Configure Bot Tokens{Colors.ENDC}")
+    print(f"{Colors.GREEN}2.{Colors.ENDC} {Colors.BOLD}Configure Owner ID{Colors.ENDC}")
+    print(f"{Colors.GREEN}3.{Colors.ENDC} {Colors.BOLD}Set DM on Join Message{Colors.ENDC}")
+    print(f"{Colors.GREEN}4.{Colors.ENDC} {Colors.BOLD}Set Mass DM Message{Colors.ENDC}")
+    print(f"{Colors.GREEN}5.{Colors.ENDC} {Colors.BOLD}Set DMs per Bot (rotation threshold){Colors.ENDC}")
+    print(f"{Colors.GREEN}6.{Colors.ENDC} {Colors.BOLD}View Statistics{Colors.ENDC}")
+    print(f"{Colors.GREEN}7.{Colors.ENDC} {Colors.BOLD}Start Bot{Colors.ENDC}")
+    print(f"{Colors.GREEN}8.{Colors.ENDC} {Colors.BOLD}Mass DM All Users (Manual){Colors.ENDC}")
+    print(f"{Colors.GREEN}9.{Colors.ENDC} {Colors.BOLD}Exit{Colors.ENDC}")
+    print(f"{Colors.CYAN}{'='*60}{Colors.ENDC}")
 
 def configure_tokens():
     """Configure bot tokens"""
-    print("\n[*] Current tokens: ", len(bot_manager.config["bot_tokens"]))
-    print("\n[*] Enter bot tokens (one per line, empty line to finish):")
+    print(f"\n{Colors.CYAN}[*] Current tokens: {len(bot_manager.config['bot_tokens'])}{Colors.ENDC}")
+    print(f"\n{Colors.YELLOW}[*] Enter bot tokens (one per line, empty line to finish):{Colors.ENDC}")
     
     tokens = []
     while True:
-        token = input(f"Token #{len(tokens) + 1}: ").strip()
+        token = input(f"{Colors.BLUE}Token #{len(tokens) + 1}: {Colors.ENDC}").strip()
         if not token:
             break
         tokens.append(token)
@@ -336,47 +401,67 @@ def configure_tokens():
         bot_manager.config["current_bot_index"] = 0
         bot_manager.config["current_dm_count"] = 0
         save_config(bot_manager.config)
-        print(f"[✓] Saved {len(tokens)} bot tokens")
+        print(f"{Colors.GREEN}[✓] Saved {len(tokens)} bot tokens{Colors.ENDC}")
     else:
-        print("[!] No tokens added")
+        print(f"{Colors.RED}[!] No tokens added{Colors.ENDC}")
 
 def configure_owner():
     """Configure owner ID"""
-    print(f"\n[*] Current owner ID: {bot_manager.config.get('owner_id', 'Not set')}")
-    owner_id = input("Enter owner Discord ID: ").strip()
+    print(f"\n{Colors.CYAN}[*] Current owner ID: {bot_manager.config.get('owner_id', 'Not set')}{Colors.ENDC}")
+    owner_id = input(f"{Colors.BLUE}Enter owner Discord ID: {Colors.ENDC}").strip()
     
     if owner_id:
         bot_manager.config["owner_id"] = owner_id
         save_config(bot_manager.config)
-        print("[✓] Owner ID saved")
+        print(f"{Colors.GREEN}[✓] Owner ID saved{Colors.ENDC}")
     else:
-        print("[!] No owner ID entered")
+        print(f"{Colors.RED}[!] No owner ID entered{Colors.ENDC}")
 
 def set_dm_message():
-    """Set the default DM message"""
-    print(f"\n[*] Current message: {bot_manager.config['dm_message']}")
-    message = input("Enter new DM message: ").strip()
+    """Set the DM on join message"""
+    print(f"\n{Colors.CYAN}[*] Current DM on Join message:{Colors.ENDC}")
+    print(f"{Colors.YELLOW}{bot_manager.config['dm_message']}{Colors.ENDC}")
+    message = input(f"{Colors.BLUE}Enter new DM on join message: {Colors.ENDC}").strip()
     
     if message:
         bot_manager.config["dm_message"] = message
         save_config(bot_manager.config)
-        print("[✓] DM message updated")
+        print(f"{Colors.GREEN}[✓] DM on join message updated{Colors.ENDC}")
     else:
-        print("[!] No message entered")
+        print(f"{Colors.RED}[!] No message entered{Colors.ENDC}")
+
+def set_mass_dm_message():
+    """Set the mass DM message (separate from on-join message)"""
+    current = bot_manager.config.get("mass_dm_message", "")
+    if not current:
+        print(f"\n{Colors.CYAN}[*] Current Mass DM message: {Colors.YELLOW}(using same as DM on join){Colors.ENDC}")
+    else:
+        print(f"\n{Colors.CYAN}[*] Current Mass DM message:{Colors.ENDC}")
+        print(f"{Colors.YELLOW}{current}{Colors.ENDC}")
+    
+    print(f"{Colors.CYAN}[*] Leave empty to use same as DM on join message{Colors.ENDC}")
+    message = input(f"{Colors.BLUE}Enter mass DM message: {Colors.ENDC}").strip()
+    
+    bot_manager.config["mass_dm_message"] = message
+    save_config(bot_manager.config)
+    if message:
+        print(f"{Colors.GREEN}[✓] Mass DM message set to custom message{Colors.ENDC}")
+    else:
+        print(f"{Colors.GREEN}[✓] Mass DM will use same message as DM on join{Colors.ENDC}")
 
 def set_dms_per_bot():
     """Set the DM threshold for bot rotation"""
-    print(f"\n[*] Current threshold: {bot_manager.config['dms_per_bot']}")
+    print(f"\n{Colors.CYAN}[*] Current threshold: {bot_manager.config['dms_per_bot']}{Colors.ENDC}")
     try:
-        threshold = int(input("Enter DMs per bot before rotation: ").strip())
+        threshold = int(input(f"{Colors.BLUE}Enter DMs per bot before rotation: {Colors.ENDC}").strip())
         if threshold > 0:
             bot_manager.config["dms_per_bot"] = threshold
             save_config(bot_manager.config)
-            print("[✓] Threshold updated")
+            print(f"{Colors.GREEN}[✓] Threshold updated{Colors.ENDC}")
         else:
-            print("[!] Must be a positive number")
+            print(f"{Colors.RED}[!] Must be a positive number{Colors.ENDC}")
     except ValueError:
-        print("[!] Invalid number")
+        print(f"{Colors.RED}[!] Invalid number{Colors.ENDC}")
 
 def view_statistics():
     """View bot statistics"""
@@ -385,58 +470,72 @@ def view_statistics():
     current_bot_index = bot_manager.config["current_bot_index"]
     total_bots = len(bot_manager.config["bot_tokens"])
     
-    print("\n" + "="*50)
-    print("     STATISTICS")
-    print("="*50)
-    print(f"Total Users DMed: {total_users}")
-    print(f"Current Bot DMs: {current_count}/{bot_manager.config['dms_per_bot']}")
-    print(f"Active Bot: #{current_bot_index + 1} of {total_bots}")
-    print(f"Bot Tokens Configured: {total_bots}")
-    print("="*50)
+    print(f"\n{Colors.CYAN}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.BOLD}{Colors.HEADER}               📊 STATISTICS 📊{Colors.ENDC}")
+    print(f"{Colors.CYAN}{'='*60}{Colors.ENDC}")
+    print(f"{Colors.YELLOW}👥 Total Users DMed:{Colors.ENDC} {Colors.BOLD}{total_users}{Colors.ENDC}")
+    print(f"{Colors.YELLOW}📨 Current Bot DMs:{Colors.ENDC} {Colors.BOLD}{current_count}/{bot_manager.config['dms_per_bot']}{Colors.ENDC}")
+    print(f"{Colors.YELLOW}🤖 Active Bot:{Colors.ENDC} {Colors.BOLD}#{current_bot_index + 1} of {total_bots}{Colors.ENDC}")
+    print(f"{Colors.YELLOW}🔧 Bot Tokens Configured:{Colors.ENDC} {Colors.BOLD}{total_bots}{Colors.ENDC}")
+    print(f"{Colors.CYAN}{'='*60}{Colors.ENDC}")
 
 async def manual_mass_dm():
-    """Manually trigger mass DM from menu"""
+    """Manually trigger mass DM from menu - uses correct bot for each user"""
     if not bot_manager.config["bot_tokens"]:
-        print("[!] No bot tokens configured!")
+        print(f"{Colors.RED}[!] No bot tokens configured!{Colors.ENDC}")
         return
     
-    message = input("Enter message (leave empty for default): ").strip()
+    # Use mass_dm_message if set, otherwise ask
+    default_msg = bot_manager.config.get("mass_dm_message", "") or bot_manager.config["dm_message"]
+    print(f"\n{Colors.CYAN}[*] Default message:{Colors.ENDC} {Colors.YELLOW}{default_msg}{Colors.ENDC}")
+    message = input(f"{Colors.BLUE}Enter message (leave empty for default): {Colors.ENDC}").strip()
     if not message:
         message = None
     
-    confirm = input(f"Send DM to {get_dm_count()} users? (yes/no): ").strip().lower()
+    user_count = get_dm_count()
+    confirm = input(f"{Colors.YELLOW}Send DM to {user_count} users using their original bots? (yes/no): {Colors.ENDC}").strip().lower()
     if confirm != 'yes':
-        print("[!] Cancelled")
+        print(f"{Colors.RED}[!] Cancelled{Colors.ENDC}")
         return
     
-    # Create temporary bot for manual DM
-    print("[*] Starting bot for mass DM...")
-    token = bot_manager.get_current_bot_token()
+    # Create bot clients for all tokens
+    print(f"{Colors.CYAN}[*] Starting bots for mass DM...{Colors.ENDC}")
     
-    if not token:
-        print("[!] No valid bot token")
-        return
-    
-    temp_bot = create_bot()
+    # Create multiple bot instances
+    bot_clients = {}
     
     async def run_mass_dm():
-        async with temp_bot:
-            await temp_bot.login(token)
-            bot_manager.current_bot = temp_bot
-            await bot_manager.mass_dm_all_users(message)
+        # Login all bots
+        tasks = []
+        for idx, token in enumerate(bot_manager.config["bot_tokens"]):
+            bot = create_bot()
+            bot_clients[idx] = bot
+            tasks.append(bot.login(token))
+        
+        try:
+            await asyncio.gather(*tasks)
+            print(f"{Colors.GREEN}[✓] All bots logged in{Colors.ENDC}")
+            
+            # Now run mass DM with all bot clients
+            await bot_manager.mass_dm_all_users(message, bot_clients)
+            
+        finally:
+            # Close all bots
+            for bot in bot_clients.values():
+                await bot.close()
     
     try:
         await run_mass_dm()
     except Exception as e:
-        print(f"[!] Error during mass DM: {e}")
+        print(f"{Colors.RED}[!] Error during mass DM: {e}{Colors.ENDC}")
 
 def run_menu():
     """Run the interactive CLI menu"""
-    init_database()
+    init_user_tracking()
     
     while True:
         print_menu()
-        choice = input("\nSelect option: ").strip()
+        choice = input(f"\n{Colors.BOLD}Select option: {Colors.ENDC}").strip()
         
         if choice == '1':
             configure_tokens()
@@ -445,56 +544,58 @@ def run_menu():
         elif choice == '3':
             set_dm_message()
         elif choice == '4':
-            set_dms_per_bot()
+            set_mass_dm_message()
         elif choice == '5':
-            view_statistics()
+            set_dms_per_bot()
         elif choice == '6':
+            view_statistics()
+        elif choice == '7':
             if not bot_manager.config["bot_tokens"]:
-                print("[!] Please configure bot tokens first!")
+                print(f"{Colors.RED}[!] Please configure bot tokens first!{Colors.ENDC}")
                 continue
             
-            print("[*] Starting bot...")
+            print(f"{Colors.CYAN}[*] Starting bot...{Colors.ENDC}")
             token = bot_manager.get_current_bot_token()
             
             if not token:
-                print("[!] No valid bot token")
+                print(f"{Colors.RED}[!] No valid bot token{Colors.ENDC}")
                 continue
             
             bot = create_bot()
-            print(f"[*] Using bot #{bot_manager.config['current_bot_index'] + 1}")
-            print("[*] Press Ctrl+C to stop the bot")
+            print(f"{Colors.GREEN}[*] Using bot #{bot_manager.config['current_bot_index'] + 1}{Colors.ENDC}")
+            print(f"{Colors.YELLOW}[*] Press Ctrl+C to stop the bot{Colors.ENDC}")
             
             try:
                 bot.run(token)
             except KeyboardInterrupt:
-                print("\n[!] Bot stopped by user")
+                print(f"\n{Colors.YELLOW}[!] Bot stopped by user{Colors.ENDC}")
             except Exception as e:
-                print(f"[!] Error running bot: {e}")
-        elif choice == '7':
+                print(f"{Colors.RED}[!] Error running bot: {e}{Colors.ENDC}")
+        elif choice == '8':
             try:
                 asyncio.run(manual_mass_dm())
             except Exception as e:
-                print(f"[!] Error: {e}")
-        elif choice == '8':
-            print("[*] Exiting...")
+                print(f"{Colors.RED}[!] Error: {e}{Colors.ENDC}")
+        elif choice == '9':
+            print(f"{Colors.GREEN}[*] Exiting...{Colors.ENDC}")
             break
         else:
-            print("[!] Invalid option")
+            print(f"{Colors.RED}[!] Invalid option{Colors.ENDC}")
 
 # ---------------------------
 # Main Entry Point
 # ---------------------------
 if __name__ == "__main__":
-    print("""
-    ╔═══════════════════════════════════════════════════════╗
-    ║         Discord DM Bot with Token Rotation           ║
-    ║                    Version 1.0                        ║
-    ╚═══════════════════════════════════════════════════════╝
+    print(f"""
+{Colors.CYAN}    ╔═══════════════════════════════════════════════════════════╗{Colors.ENDC}
+{Colors.HEADER}{Colors.BOLD}    ║       🤖 Discord DM Bot with Token Rotation 🤖          ║{Colors.ENDC}
+{Colors.GREEN}    ║                    Version 2.0                            ║{Colors.ENDC}
+{Colors.CYAN}    ╚═══════════════════════════════════════════════════════════╝{Colors.ENDC}
     """)
     
     try:
         run_menu()
     except KeyboardInterrupt:
-        print("\n[*] Exiting...")
+        print(f"\n{Colors.YELLOW}[*] Exiting...{Colors.ENDC}")
     except Exception as e:
-        print(f"\n[!] Fatal error: {e}")
+        print(f"\n{Colors.RED}[!] Fatal error: {e}{Colors.ENDC}")
