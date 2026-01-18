@@ -10,15 +10,15 @@ from datetime import datetime, timezone
 # Configuration / constants
 # ---------------------------
 TOKEN = ""
-GUILD_ID = "1453053361153773612"
-OWN_USER_ID = "1414302560675954821"
+GUILD_ID = "1460863243990859851"
+OWN_USER_ID = "1425093130813968395"
 
 # Your current message content / followup text (kept as you asked)
-MESSAGE_CONTENT = ("Add me and **__YOU MUST__** join the tele network https://t.me/addlist/i06wmTNLVkkwOGIx and it will insta accept you,\n"
-                   "-# SEND A SCREENSHOT OF YOU IN THE [TELEGRAM](https://t.me/addlist/i06wmTNLVkkwOGIx) TO BE ACCEPTED")
+MESSAGE_CONTENT = ("Add me and **__YOU MUST__** join the tele network https://t.me/addlist/kb2V8807oMg1NGYx and it will insta accept you,\n"
+                   "-# SEND A SCREENSHOT OF YOU IN THE [TELEGRAM](https://t.me/addlist/kb2V8807oMg1NGYx) TO BE ACCEPTED")
 
 FOLLOW_UP_DELAY = 60  # seconds
-FOLLOW_UP_MESSAGE = ("-# Please upload the screenshot of you in the [Telegram channel](https://t.me/addlist/i06wmTNLVkkwOGIx) so we can approve you.\n"
+FOLLOW_UP_MESSAGE = ("-# Please upload the screenshot of you in the [Telegram channel](https://t.me/addlist/kb2V8807oMg1NGYx) so we can approve you.\n"
                      "-# If you've already uploaded it, give it a moment to appear.")
 
 # NEW: special reminder message when a user posts an image but hasn't added the account/friend-request yet
