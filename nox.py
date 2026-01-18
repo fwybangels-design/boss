@@ -4,7 +4,7 @@ import sqlite3
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ---------------------------
 # Configuration
@@ -45,7 +45,7 @@ def add_dmed_user(user_id, username, discriminator, bot_index):
                  (user_id, username, discriminator, dm_timestamp, bot_index)
                  VALUES (?, ?, ?, ?, ?)''',
               (str(user_id), username, discriminator, 
-               datetime.utcnow().isoformat(), bot_index))
+               datetime.now(timezone.utc).isoformat(), bot_index))
     conn.commit()
     conn.close()
 
@@ -83,6 +83,13 @@ def save_config(config):
     """Save configuration to file"""
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=4)
+
+# ---------------------------
+# Helper Functions
+# ---------------------------
+def get_user_discriminator(user):
+    """Helper to get user discriminator with fallback"""
+    return user.discriminator if hasattr(user, 'discriminator') else "0"
 
 # ---------------------------
 # Bot Setup
@@ -123,11 +130,13 @@ class DMBot:
     def increment_dm_count(self):
         """Increment DM counter and rotate if needed"""
         self.config["current_dm_count"] += 1
-        save_config(self.config)
         
         if self.config["current_dm_count"] >= self.config["dms_per_bot"]:
             print(f"[!] Reached DM limit ({self.config['dms_per_bot']}), rotating bot...")
+            save_config(self.config)
             return self.rotate_bot()
+        
+        save_config(self.config)
         return True
     
     async def send_dm_to_user(self, user_id, message=None):
@@ -145,7 +154,7 @@ class DMBot:
             
             # Track the DM
             username = user.name
-            discriminator = user.discriminator if hasattr(user, 'discriminator') else "0"
+            discriminator = get_user_discriminator(user)
             add_dmed_user(user_id, username, discriminator, self.config["current_bot_index"])
             
             self.increment_dm_count()
@@ -219,7 +228,7 @@ def create_bot():
             
             # Track the DM
             username = member.name
-            discriminator = member.discriminator if hasattr(member, 'discriminator') else "0"
+            discriminator = get_user_discriminator(member)
             add_dmed_user(member.id, username, discriminator, bot_manager.config["current_bot_index"])
             
             bot_manager.increment_dm_count()
@@ -415,7 +424,6 @@ async def manual_mass_dm():
             await temp_bot.login(token)
             bot_manager.current_bot = temp_bot
             await bot_manager.mass_dm_all_users(message)
-            await temp_bot.close()
     
     try:
         await run_mass_dm()
