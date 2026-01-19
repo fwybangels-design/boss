@@ -70,6 +70,11 @@ CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it'
 # Concurrent processing configuration
 MAX_WORKERS = 50  # Maximum number of concurrent threads for processing applications
 
+# Batch processing timing constants
+CHANNEL_CREATION_DELAY = 0.5  # Delay after opening interviews to allow Discord to create channels
+MAX_CHANNEL_FIND_RETRIES = 5  # Maximum retries for finding newly created channels
+CHANNEL_FIND_RETRY_DELAY = 0.5  # Delay between channel finding retries
+
 # in-memory state only (matches original behavior)
 seen_reqs = set()
 open_interviews = {}
@@ -220,7 +225,8 @@ def find_channels_batch(user_ids):
                     for user_id in matched_users:
                         channel_id = c.get("id")
                         # Prefer newest channel (highest snowflake ID)
-                        if user_id not in user_to_channel or int(channel_id or 0) > int(user_to_channel[user_id] or 0):
+                        # Safely handle None or empty channel_id values
+                        if channel_id and (user_id not in user_to_channel or int(channel_id) > int(user_to_channel[user_id] or 0)):
                             user_to_channel[user_id] = channel_id
         
         return user_to_channel
@@ -505,16 +511,15 @@ def process_application_batch(applications):
     open_interviews_batch(request_ids)
     
     # Step 2: Wait a bit for channels to be created, then find all channels in one API call
-    time.sleep(0.5)  # Small delay to let Discord create channels
+    time.sleep(CHANNEL_CREATION_DELAY)
     user_ids = [app['user_id'] for app in applications]
     user_to_channel = find_channels_batch(user_ids)
     
     # Step 3: For users without channels yet, retry a few times
     missing_users = [uid for uid in user_ids if str(uid) not in user_to_channel]
     retry_count = 0
-    max_retries = 5
-    while missing_users and retry_count < max_retries:
-        time.sleep(0.5)
+    while missing_users and retry_count < MAX_CHANNEL_FIND_RETRIES:
+        time.sleep(CHANNEL_FIND_RETRY_DELAY)
         new_channels = find_channels_batch(missing_users)
         user_to_channel.update(new_channels)
         missing_users = [uid for uid in missing_users if str(uid) not in user_to_channel]
@@ -566,7 +571,8 @@ def process_application_batch(applications):
                         add_two_people_reminded.discard(user_id)
                     logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
     
-    # Step 7: Start monitoring threads for each application
+    # Step 7: Start monitoring threads for each application (limited by daemon threads)
+    # Note: These are lightweight monitoring threads that mostly sleep, so resource usage is minimal
     for app in applications:
         user_id = str(app['user_id'])
         if user_id in open_interviews:
@@ -809,7 +815,7 @@ def main():
     
     poller_thread = threading.Thread(target=approval_poller, daemon=True)
     poller_thread.start()
-    logger.info("Starting main poller loop with batch processing for maximum speed.")
+    logger.info("Starting main poller loop with concurrent batch processing enabled.")
     while True:
         apps = get_pending_applications()
         
