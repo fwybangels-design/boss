@@ -85,6 +85,9 @@ seen_reqs_lock = threading.Lock()
 add_two_people_reminded = set()
 add_two_people_reminded_lock = threading.Lock()
 
+# Thread pool for approval checking to avoid creating new pools on each iteration
+approval_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="approval-")
+
 # Logging
 VERBOSE = False
 logger = logging.getLogger("discord_auto_accept")
@@ -226,7 +229,7 @@ def find_channels_batch(user_ids):
                         channel_id = c.get("id")
                         # Prefer newest channel (highest snowflake ID)
                         # Safely handle None or empty channel_id values
-                        if channel_id and (user_id not in user_to_channel or int(channel_id) > int(user_to_channel[user_id] or 0)):
+                        if channel_id and (user_id not in user_to_channel or int(channel_id) > int(user_to_channel.get(user_id) or '0' or 0)):
                             user_to_channel[user_id] = channel_id
         
         return user_to_channel
@@ -734,13 +737,25 @@ def approval_poller():
             time.sleep(APPROVAL_POLL_INTERVAL)
             continue
 
+        # Copy all user data once to minimize lock contention during concurrent processing
+        user_data_list = []
+        with open_interviews_lock:
+            for user_id in keys:
+                info = open_interviews.get(user_id)
+                if info:
+                    user_data_list.append({
+                        'user_id': user_id,
+                        'reqid': info.get("reqid"),
+                        'channel_id': info.get("channel_id"),
+                        'opened_at': info.get("opened_at", 0.0)
+                    })
+        
         # Process all users concurrently
-        def check_and_approve_user(user_id):
-            with open_interviews_lock:
-                info = open_interviews.get(user_id, {})
-                reqid = info.get("reqid")
-                channel_id = info.get("channel_id")
-                opened_at = info.get("opened_at", 0.0)
+        def check_and_approve_user(user_data):
+            user_id = user_data['user_id']
+            reqid = user_data['reqid']
+            channel_id = user_data['channel_id']
+            opened_at = user_data['opened_at']
             
             if not reqid or not channel_id:
                 return None
@@ -754,20 +769,26 @@ def approval_poller():
 
             # NEW: If image present but not 2 people added, send the "add 2 people" reminder once
             if has_image and not has_two_people:
+                # Check if reminder already sent (minimize lock time)
+                should_send = False
                 with add_two_people_reminded_lock:
                     if user_id not in add_two_people_reminded:
-                        logger.info("Attempting add-2-people reminder for user %s in channel %s", user_id, channel_id)
-                        reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
-                        sent = False
-                        try:
-                            sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
-                        except Exception:
-                            logger.exception("Exception while sending add-2-people reminder to %s", user_id)
-                        if sent:
+                        should_send = True
+                
+                if should_send:
+                    logger.info("Attempting add-2-people reminder for user %s in channel %s", user_id, channel_id)
+                    reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
+                    sent = False
+                    try:
+                        sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
+                    except Exception:
+                        logger.exception("Exception while sending add-2-people reminder to %s", user_id)
+                    if sent:
+                        with add_two_people_reminded_lock:
                             add_two_people_reminded.add(user_id)
-                            logger.info("Sent add-2-people reminder to user %s in channel %s", user_id, channel_id)
-                        else:
-                            logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
+                        logger.info("Sent add-2-people reminder to user %s in channel %s", user_id, channel_id)
+                    else:
+                        logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
 
             # Approve when 2 people added AND image is uploaded
             if has_two_people and has_image:
@@ -784,17 +805,16 @@ def approval_poller():
             
             return None
         
-        # Check all users concurrently
+        # Check all users concurrently using persistent thread pool
         to_remove = []
-        with ThreadPoolExecutor(max_workers=min(len(keys), MAX_WORKERS)) as executor:
-            futures = {executor.submit(check_and_approve_user, user_id): user_id for user_id in keys}
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    if result:
-                        to_remove.append(result)
-                except Exception:
-                    logger.exception("Exception in approval checking")
+        futures = {approval_executor.submit(check_and_approve_user, user_data): user_data['user_id'] for user_data in user_data_list}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                if result:
+                    to_remove.append(result)
+            except Exception:
+                logger.exception("Exception in approval checking")
         
         # Remove approved users
         if to_remove:
@@ -802,9 +822,10 @@ def approval_poller():
                 for user_id in to_remove:
                     if user_id in open_interviews:
                         del open_interviews[user_id]
-                    # also clear reminder state if present
-                    with add_two_people_reminded_lock:
-                        add_two_people_reminded.discard(user_id)
+            # Clear reminder state for removed users
+            with add_two_people_reminded_lock:
+                for user_id in to_remove:
+                    add_two_people_reminded.discard(user_id)
         
         time.sleep(APPROVAL_POLL_INTERVAL)
 
