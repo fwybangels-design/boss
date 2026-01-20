@@ -819,18 +819,43 @@ def send_interview_message(channel_id, message, mention_user_id=None):
     if mention_user_id:
         data["allowed_mentions"] = {"parse": [], "users": [str(mention_user_id)]}
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
-    try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
-        _log_resp_short(f"send_interview_message to {channel_id}", resp)
-        if getattr(resp, "status_code", None) in (200, 201):
-            logger.info("Sent message to channel %s", channel_id)
-            return True
-        else:
-            logger.warning("Failed to send message to %s status=%s", channel_id, getattr(resp, "status_code", "N/A"))
+    
+    # Retry with exponential backoff for SSL and transient errors
+    for attempt in range(MAX_REQUEST_RETRIES):
+        try:
+            resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=REQUEST_TIMEOUT)
+            _log_resp_short(f"send_interview_message to {channel_id}", resp)
+            
+            if getattr(resp, "status_code", None) == 429:
+                try:
+                    retry_data = resp.json()
+                    retry_after = float(retry_data.get("retry_after", 2))
+                except Exception:
+                    retry_after = 2.0
+                logger.warning("Rate limited in send_interview_message, waiting %s seconds", retry_after)
+                time.sleep(retry_after)
+                continue  # Retry after rate limit
+            
+            if getattr(resp, "status_code", None) in (200, 201):
+                logger.info("Sent message to channel %s", channel_id)
+                return True
+            else:
+                logger.warning("Failed to send message to %s status=%s", channel_id, getattr(resp, "status_code", "N/A"))
+                if attempt < MAX_REQUEST_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (2 ** attempt))
+                    continue
+                return False
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning("Network error in send_interview_message (attempt %d/%d): %s", 
+                          attempt + 1, MAX_REQUEST_RETRIES, str(e))
+            if attempt < MAX_REQUEST_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))  # Exponential backoff
+        except Exception:
+            logger.exception("Exception sending message")
             return False
-    except Exception:
-        logger.exception("Exception sending message")
-        return False
+    
+    logger.error("Failed to send message after %d retries", MAX_REQUEST_RETRIES)
+    return False
 
 def send_messages_batch(messages_to_send):
     """Send multiple messages concurrently. messages_to_send is a list of (channel_id, message, mention_user_id) tuples."""
