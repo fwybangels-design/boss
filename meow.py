@@ -87,6 +87,11 @@ initial_startup_lock = threading.Lock()
 # Persistent state file
 STATE_FILE = "meow_state.json"
 
+# Auto-save interval (save state every N seconds to handle restarts better)
+AUTO_SAVE_INTERVAL = 30  # seconds
+last_save_time = 0.0
+last_save_time_lock = threading.Lock()
+
 # in-memory state
 seen_reqs = set()
 open_interviews = {}
@@ -115,6 +120,7 @@ logger.addHandler(ch)
 # Helpers
 def save_state():
     """Save the current state to disk for persistence across restarts."""
+    global last_save_time
     try:
         # Acquire locks to prevent race conditions
         with seen_reqs_lock:
@@ -129,9 +135,25 @@ def save_state():
         }
         with open(STATE_FILE, 'w') as f:
             json.dump(state, f, indent=2)
-        logger.debug("State saved to %s", STATE_FILE)
+        
+        with last_save_time_lock:
+            last_save_time = time.time()
+        
+        logger.debug("State saved to %s (%d seen_reqs, %d open_interviews)", 
+                    STATE_FILE, len(seen_reqs_copy), len(open_interviews_copy))
     except Exception:
         logger.exception("Failed to save state")
+
+def auto_save_state_if_needed():
+    """Auto-save state if enough time has passed since last save."""
+    global last_save_time
+    with last_save_time_lock:
+        current_time = time.time()
+        time_since_last_save = current_time - last_save_time
+    
+    if time_since_last_save >= AUTO_SAVE_INTERVAL:
+        logger.debug("Auto-saving state (%.1fs since last save)", time_since_last_save)
+        save_state()
 
 def load_state():
     """Load state from disk on startup to resume incomplete applications."""
@@ -222,8 +244,18 @@ def get_pending_applications():
             if not apps:
                 break  # No more applications
             
-            all_apps.extend(apps)
-            logger.info("Fetched %d applications on page %d (total so far: %d)", len(apps), page + 1, len(all_apps))
+            # Filter to only include applications with status SUBMITTED
+            # This prevents processing already approved/rejected applications
+            filtered_apps = []
+            for app in apps:
+                status = app.get("application_status")
+                if status == "SUBMITTED" or status is None:  # None means default SUBMITTED
+                    filtered_apps.append(app)
+                else:
+                    logger.debug("Skipping application %s with status %s", app.get("id"), status)
+            
+            all_apps.extend(filtered_apps)
+            logger.info("Fetched %d applications on page %d (total so far: %d)", len(filtered_apps), page + 1, len(all_apps))
             
             # Check if there are more pages
             if len(apps) < 100:
@@ -663,6 +695,32 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     except Exception:
         logger.exception("Exception in channel_has_image_from_user")
         return False
+
+def check_images_batch(channel_user_pairs):
+    """Check for images in multiple channels concurrently."""
+    if not channel_user_pairs:
+        return {}
+    
+    logger.debug("Checking images for %d channels concurrently", len(channel_user_pairs))
+    results = {}
+    
+    def check_image_for_pair(pair):
+        channel_id, user_id, min_ts = pair
+        has_image = channel_has_image_from_user(channel_id, user_id, min_ts)
+        return (channel_id, has_image)
+    
+    with ThreadPoolExecutor(max_workers=min(len(channel_user_pairs), MAX_WORKERS)) as executor:
+        futures = {executor.submit(check_image_for_pair, pair): pair for pair in channel_user_pairs}
+        for future in as_completed(futures):
+            try:
+                channel_id, has_image = future.result()
+                results[channel_id] = has_image
+            except Exception:
+                pair = futures[future]
+                logger.exception("Exception in batch image checking for channel %s", pair[0])
+                results[pair[0]] = False
+    
+    return results
 
 # ---------------------------
 # Main behaviors (staggered processing for stability on startup, instant for runtime)
@@ -1112,8 +1170,11 @@ def approval_poller():
             with upload_screenshot_reminded_lock:
                 for user_id in to_remove:
                     upload_screenshot_reminded.discard(user_id)
-            # Save state after removing completed applications
+            # Save state immediately after removing completed applications
             save_state()
+        else:
+            # Auto-save periodically even if no removals
+            auto_save_state_if_needed()
         
         time.sleep(APPROVAL_POLL_INTERVAL)
 
@@ -1142,6 +1203,12 @@ def main():
             if not reqid or not user_id:
                 continue
 
+            # Skip if already being processed
+            with open_interviews_lock:
+                if str(user_id) in open_interviews:
+                    logger.debug("Skipping application %s - already in open_interviews", reqid)
+                    continue
+
             with seen_reqs_lock:
                 if reqid in seen_reqs:
                     continue
@@ -1167,6 +1234,9 @@ def main():
             
             thread.daemon = True
             thread.start()
+        
+        # Auto-save state periodically in main loop
+        auto_save_state_if_needed()
         
         time.sleep(POLL_INTERVAL)
 
