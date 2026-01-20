@@ -4,6 +4,8 @@ import time
 import random
 import threading
 import logging
+import tempfile
+import os
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -146,8 +148,6 @@ def save_state():
         }
         
         # Atomic write: write to temp file then rename (prevents corruption on crash)
-        import tempfile
-        import os
         temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(STATE_FILE) or '.', prefix='.meow_state_', suffix='.tmp')
         try:
             with os.fdopen(temp_fd, 'w') as f:
@@ -197,15 +197,16 @@ def cleanup_tracking_sets():
         with open_interviews_lock:
             active_user_ids = set(open_interviews.keys())
         
-        # Get request IDs from active users (if stored in open_interviews)
-        # Since we don't store reqid->user_id mapping easily, we'll just cap the size
+        # Note: seen_reqs stores request IDs not user IDs, so we use FIFO with cap
+        # Warning: Python sets are unordered in Python < 3.7, but insertion-ordered in 3.7+
+        # We rely on Python 3.7+ insertion order for FIFO cleanup
         with seen_reqs_lock:
             if len(seen_reqs) > MAX_TRACKING_SET_SIZE:
-                # Convert to list, keep most recent entries (last 50% of max size)
-                keep_size = MAX_TRACKING_SET_SIZE // 2
+                # Convert to list to maintain order (Python 3.7+ preserves insertion order in sets)
                 seen_reqs_list = list(seen_reqs)
+                keep_size = MAX_TRACKING_SET_SIZE // 2
                 seen_reqs.clear()
-                # Keep the most recent entries
+                # Keep the most recent entries (last 50% of max size)
                 seen_reqs.update(seen_reqs_list[-keep_size:])
                 logger.info("Cleaned up seen_reqs: kept %d of %d entries", keep_size, len(seen_reqs_list))
         
@@ -318,10 +319,11 @@ def get_pending_applications():
             
             # Filter to only include applications with status SUBMITTED
             # This prevents processing already approved/rejected applications
+            # Note: Discord API returns None for status field when application is SUBMITTED (default state)
             filtered_apps = []
             for app in apps:
                 status = app.get("application_status")
-                if status == "SUBMITTED" or status is None:  # None means default SUBMITTED
+                if status == "SUBMITTED" or status is None:  # None means default SUBMITTED state
                     filtered_apps.append(app)
                 else:
                     logger.debug("Skipping application %s with status %s", app.get("id"), status)
@@ -1257,8 +1259,11 @@ def main():
     global initial_startup
     
     # Validate configuration at startup
+    # Note: TOKEN and GUILD_ID are initialized as empty strings above
+    # They should be set in the code or loaded from environment/config file before running
     if not TOKEN or not GUILD_ID:
-        logger.error("TOKEN and GUILD_ID must be configured!")
+        logger.error("TOKEN and GUILD_ID must be configured in the script before running!")
+        logger.error("Edit the TOKEN and GUILD_ID variables at the top of the file.")
         raise ValueError("Missing required configuration: TOKEN or GUILD_ID")
     
     if not SERVER_INVITE_LINK:
