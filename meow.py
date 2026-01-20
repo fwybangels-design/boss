@@ -89,6 +89,7 @@ STATE_FILE = "meow_state.json"
 
 # Auto-save interval (save state every N seconds to handle restarts better)
 AUTO_SAVE_INTERVAL = 30  # seconds
+MAX_APPLICATION_PAGES = 10  # Maximum pages to fetch (10 pages * 100 = 1000 max applications)
 last_save_time = 0.0
 last_save_time_lock = threading.Lock()
 
@@ -133,9 +134,12 @@ def save_state():
             "seen_reqs": seen_reqs_copy,
             "open_interviews": open_interviews_copy
         }
+        
+        # Write to file
         with open(STATE_FILE, 'w') as f:
             json.dump(state, f, indent=2)
         
+        # Update timestamp only after successful write
         with last_save_time_lock:
             last_save_time = time.time()
         
@@ -221,12 +225,11 @@ def get_pending_applications():
     """Fetch all pending applications with pagination to handle 250+ applications."""
     all_apps = []
     after = None
-    max_pages = 10  # Safety limit to prevent infinite loops (10 pages * 100 = 1000 max)
     
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     
-    for page in range(max_pages):
+    for page in range(MAX_APPLICATION_PAGES):
         try:
             url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
             if after:
@@ -238,7 +241,12 @@ def get_pending_applications():
             if not resp or resp.status_code != 200:
                 break
             
-            data = resp.json() if isinstance(resp.text, str) else {}
+            try:
+                data = resp.json()
+            except Exception:
+                logger.warning("Failed to parse JSON response on page %d", page + 1)
+                break
+                
             apps = data.get("guild_join_requests", []) if isinstance(data, dict) else []
             
             if not apps:
@@ -427,6 +435,17 @@ def get_channel_recipients_batch(channel_ids):
     
     return channel_to_recipients
 
+def filter_added_users(recipients, applicant_user_id):
+    """
+    Filter recipients to get only added users (excluding bot and applicant).
+    Returns list of added user IDs.
+    """
+    applicant_id_str = str(applicant_user_id)
+    return [
+        uid for uid in recipients 
+        if str(uid) != OWN_USER_ID_STR and str(uid) != applicant_id_str
+    ]
+
 def check_two_people_added(channel_id, applicant_user_id):
     """
     Check if the applicant has added 2 people to the group DM.
@@ -436,14 +455,7 @@ def check_two_people_added(channel_id, applicant_user_id):
     if not recipients:
         return False, []
     
-    # Convert applicant ID to string once for efficient comparison
-    applicant_id_str = str(applicant_user_id)
-    
-    # Filter out the bot and the applicant
-    added_users = [
-        uid for uid in recipients 
-        if str(uid) != OWN_USER_ID_STR and str(uid) != applicant_id_str
-    ]
+    added_users = filter_added_users(recipients, applicant_user_id)
     
     # Need at least 2 people added
     has_two_people = len(added_users) >= 2
@@ -1074,11 +1086,7 @@ def approval_poller():
             
             # Use cached recipients from batch fetch
             recipients = recipients_cache.get(channel_id, [])
-            applicant_id_str = str(user_id)
-            added_users = [
-                uid for uid in recipients 
-                if str(uid) != OWN_USER_ID_STR and str(uid) != applicant_id_str
-            ]
+            added_users = filter_added_users(recipients, user_id)
             has_two_people = len(added_users) >= 2
             
             has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
