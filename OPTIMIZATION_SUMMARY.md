@@ -57,6 +57,11 @@ This update addresses critical performance and reliability issues in the applica
 **After:** Auto-save every 30 seconds + save after removals
 **Impact:** Better recovery on restart, minimal data loss
 
+### 11. Empty Group Chat Cleanup 🧹
+**Before:** No cleanup of abandoned group chats where everyone left
+**After:** Automatic detection and leaving of GCs with only the bot remaining
+**Impact:** Cleaner channel list, prevents accumulation of dead GCs
+
 ## Technical Changes
 
 ### New Constants
@@ -67,6 +72,8 @@ MAX_APPLICATION_PAGES = 10  # maximum pagination pages
 TRACKING_SET_CLEANUP_INTERVAL = 300  # seconds (5 minutes)
 MAX_TRACKING_SET_SIZE = 10000  # maximum entries before cleanup
 APPROVAL_POLL_INTERVAL = 2.0  # reduced from 0.2s
+EMPTY_GC_CLEANUP_INTERVAL = 600  # seconds (10 minutes)
+EMPTY_GC_CLEANUP_ENABLED = True  # can disable if needed
 ```
 
 ### New Functions
@@ -75,6 +82,8 @@ APPROVAL_POLL_INTERVAL = 2.0  # reduced from 0.2s
 - `filter_added_users()` - Extracted helper to avoid duplication
 - `get_channel_recipients_batch()` - Parallel channel recipient fetching
 - `check_images_batch()` - Parallel image checking (ready for future use)
+- `leave_channel()` - Leave a Discord channel/GC
+- `cleanup_empty_group_chats()` - Automatically leave empty GCs
 
 ### Modified Functions
 - `get_pending_applications()` - Added pagination and status filtering

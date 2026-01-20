@@ -100,10 +100,16 @@ MAX_APPLICATION_PAGES = 10  # Maximum pages to fetch (10 pages * 100 = 1000 max 
 TRACKING_SET_CLEANUP_INTERVAL = 300  # seconds (5 minutes)
 MAX_TRACKING_SET_SIZE = 10000  # Maximum entries in tracking sets before cleanup
 
+# Empty GC cleanup configuration
+EMPTY_GC_CLEANUP_INTERVAL = 600  # seconds (10 minutes) - check for empty GCs to leave
+EMPTY_GC_CLEANUP_ENABLED = True  # Set to False to disable empty GC cleanup
+
 last_save_time = time.time()  # Initialize to current time to prevent immediate save
 last_save_time_lock = threading.Lock()
 last_cleanup_time = time.time()
 last_cleanup_time_lock = threading.Lock()
+last_empty_gc_cleanup_time = time.time()
+last_empty_gc_cleanup_time_lock = threading.Lock()
 
 # in-memory state
 seen_reqs = set()
@@ -223,6 +229,113 @@ def cleanup_tracking_sets():
         logger.debug("Cleaned up tracking sets")
     except Exception:
         logger.exception("Failed to cleanup tracking sets")
+
+def leave_channel(channel_id):
+    """Leave a Discord channel/group DM."""
+    url = f"https://discord.com/api/v9/channels/{channel_id}"
+    headers = HEADERS_TEMPLATE.copy()
+    headers["content-type"] = "application/json"
+    try:
+        resp = requests.delete(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+        _log_resp_short(f"leave_channel {channel_id}", resp)
+        if resp and resp.status_code in (200, 204):
+            logger.info("Successfully left channel %s", channel_id)
+            return True
+        else:
+            logger.warning("Failed to leave channel %s status=%s", channel_id, getattr(resp, "status_code", "N/A"))
+            return False
+    except Exception:
+        logger.exception("Exception leaving channel %s", channel_id)
+        return False
+
+def cleanup_empty_group_chats():
+    """
+    Clean up empty group chats where only the bot remains.
+    Safely identifies and leaves GCs with only 1 recipient (the bot itself).
+    """
+    global last_empty_gc_cleanup_time
+    
+    if not EMPTY_GC_CLEANUP_ENABLED:
+        return  # Feature disabled
+    
+    with last_empty_gc_cleanup_time_lock:
+        current_time = time.time()
+        time_since_last_cleanup = current_time - last_empty_gc_cleanup_time
+    
+    if time_since_last_cleanup < EMPTY_GC_CLEANUP_INTERVAL:
+        return  # Not time to cleanup yet
+    
+    try:
+        logger.info("Checking for empty group chats to leave...")
+        
+        # Get all channels
+        url = "https://discord.com/api/v9/users/@me/channels"
+        headers = HEADERS_TEMPLATE.copy()
+        headers.pop("content-type", None)
+        
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+        _log_resp_short("cleanup_empty_group_chats", resp)
+        
+        if not resp or resp.status_code != 200:
+            logger.warning("Failed to fetch channels for empty GC cleanup")
+            return
+        
+        channels = resp.json() if isinstance(resp.text, str) else []
+        if not isinstance(channels, list):
+            logger.warning("Invalid channels response for empty GC cleanup")
+            return
+        
+        # Get currently active interview channels to protect them
+        with open_interviews_lock:
+            active_channels = {info.get("channel_id") for info in open_interviews.values() if info.get("channel_id")}
+        
+        empty_gcs_to_leave = []
+        
+        # Find group DMs (type 3) with only 1 recipient (the bot itself)
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            
+            channel_id = channel.get("id")
+            channel_type = channel.get("type")
+            
+            # Only process group DMs (type 3)
+            if channel_type != 3:
+                continue
+            
+            # Skip if this is an active interview channel
+            if channel_id in active_channels:
+                logger.debug("Skipping active interview channel %s", channel_id)
+                continue
+            
+            # Get recipients for this channel
+            recipients = channel.get("recipients", [])
+            
+            # Count recipients (should only have the bot if everyone left)
+            # Note: The bot itself is NOT included in the recipients list
+            # So if recipients is empty, it means only the bot is in the GC
+            if len(recipients) == 0:
+                logger.info("Found empty GC %s with 0 recipients (only bot remaining)", channel_id)
+                empty_gcs_to_leave.append(channel_id)
+            else:
+                logger.debug("Channel %s has %d recipients, keeping", channel_id, len(recipients))
+        
+        # Leave empty GCs
+        if empty_gcs_to_leave:
+            logger.info("Leaving %d empty group chat(s)", len(empty_gcs_to_leave))
+            for channel_id in empty_gcs_to_leave:
+                leave_channel(channel_id)
+                time.sleep(0.5)  # Rate limit protection
+        else:
+            logger.info("No empty group chats found to leave")
+        
+        # Update last cleanup time
+        with last_empty_gc_cleanup_time_lock:
+            last_empty_gc_cleanup_time = time.time()
+        
+        logger.debug("Empty GC cleanup completed")
+    except Exception:
+        logger.exception("Failed to cleanup empty group chats")
 
 def load_state():
     """Load state from disk on startup to resume incomplete applications."""
@@ -1327,6 +1440,9 @@ def main():
         
         # Clean up tracking sets periodically
         cleanup_tracking_sets()
+        
+        # Clean up empty group chats periodically
+        cleanup_empty_group_chats()
         
         time.sleep(POLL_INTERVAL)
 
