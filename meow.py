@@ -51,7 +51,7 @@ HEADERS_TEMPLATE = {
 }
 
 POLL_INTERVAL = 1
-APPROVAL_POLL_INTERVAL = 0.5  # Reduced from 2s to 0.5s for faster approval detection when 2 people are added
+APPROVAL_POLL_INTERVAL = 0.2  # Fast approval detection when 2 people are added (reduced from 0.5s)
 SEND_RETRY_DELAY = 1
 MAX_TOTAL_SEND_TIME = 180
 
@@ -244,18 +244,37 @@ def get_channel_recipients(channel_id):
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     # Remove content-type header for GET requests (not needed and may cause issues)
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
-        _log_resp_short("get_channel_recipients", resp)
-        if resp and resp.status_code == 200:
-            channel_data = resp.json()
-            recipients = channel_data.get("recipients", [])
-            recipient_ids = [u.get("id") for u in recipients if isinstance(u, dict) and "id" in u]
-            return recipient_ids
-        return []
-    except Exception:
-        logger.exception("Exception getting channel recipients")
-        return []
+    
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            _log_resp_short("get_channel_recipients", resp)
+            
+            if resp and resp.status_code == 200:
+                channel_data = resp.json()
+                recipients = channel_data.get("recipients", [])
+                recipient_ids = [u.get("id") for u in recipients if isinstance(u, dict) and "id" in u]
+                logger.debug("Channel %s has %d recipients", channel_id, len(recipient_ids))
+                return recipient_ids
+            elif resp and resp.status_code == 429:
+                # Rate limited
+                try:
+                    retry_after = float(resp.json().get("retry_after", 1))
+                except Exception:
+                    retry_after = 1
+                logger.warning("Rate limited in get_channel_recipients, waiting %s seconds", retry_after)
+                time.sleep(retry_after)
+            else:
+                logger.warning("Failed to get channel recipients status=%s", getattr(resp, "status_code", "N/A"))
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+        except Exception as e:
+            logger.exception("Exception getting channel recipients: %s", str(e))
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+    
+    return []
 
 def check_two_people_added(channel_id, applicant_user_id):
     """
@@ -403,10 +422,14 @@ def notify_added_users(applicant_user_id, channel_id):
     """
     After an applicant is approved, notify the users that were added to the group DM
     by sending them a message asking them to join the server.
+    Implements retry logic with exponential backoff for reliability.
     """
     if not SERVER_INVITE_LINK:
         logger.warning("SERVER_INVITE_LINK not configured. Skipping notification to added users.")
         return
+    
+    # Small delay to ensure Discord state is consistent after approval
+    time.sleep(0.2)
     
     # Get the list of users who were added to the group DM
     _, added_users = check_two_people_added(channel_id, applicant_user_id)
@@ -421,27 +444,50 @@ def notify_added_users(applicant_user_id, channel_id):
     # Send message mentioning the 2 users with the server invite
     message = f"<@{user1}> <@{user2}> join {SERVER_INVITE_LINK} so i can let u in"
     
-    # We need to send this message with allowed_mentions for both users
-    headers = HEADERS_TEMPLATE.copy()
-    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    headers["content-type"] = "application/json"
-    data = {
-        "content": message,
-        "nonce": make_nonce(),
-        "tts": False,
-        "flags": 0,
-        "allowed_mentions": {"parse": [], "users": [str(user1), str(user2)]}
-    }
-    url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
-    try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
-        _log_resp_short(f"notify_added_users to {channel_id}", resp)
-        if getattr(resp, "status_code", None) in (200, 201):
-            logger.info("Sent notification to users %s and %s in channel %s", user1, user2, channel_id)
-        else:
-            logger.warning("Failed to send notification status=%s", getattr(resp, "status_code", "N/A"))
-    except Exception:
-        logger.exception("Exception sending notification to added users")
+    # Retry logic with exponential backoff (3 attempts max)
+    max_retries = 3
+    retry_delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            # We need to send this message with allowed_mentions for both users
+            headers = HEADERS_TEMPLATE.copy()
+            headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
+            headers["content-type"] = "application/json"
+            data = {
+                "content": message,
+                "nonce": make_nonce(),
+                "tts": False,
+                "flags": 0,
+                "allowed_mentions": {"parse": [], "users": [str(user1), str(user2)]}
+            }
+            url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
+            
+            resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
+            _log_resp_short(f"notify_added_users to {channel_id}", resp)
+            
+            if getattr(resp, "status_code", None) in (200, 201):
+                logger.info("Sent notification to users %s and %s in channel %s", user1, user2, channel_id)
+                return  # Success, exit function
+            elif getattr(resp, "status_code", None) == 429:
+                # Rate limited - get retry_after from response
+                try:
+                    retry_after = float(resp.json().get("retry_after", retry_delay))
+                except Exception:
+                    retry_after = retry_delay
+                logger.warning("Rate limited on notification attempt %d, waiting %s seconds", attempt + 1, retry_after)
+                time.sleep(retry_after)
+            else:
+                logger.warning("Failed to send notification attempt %d status=%s", attempt + 1, getattr(resp, "status_code", "N/A"))
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+        except Exception as e:
+            logger.exception("Exception sending notification attempt %d: %s", attempt + 1, str(e))
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+    
+    logger.error("Failed to send notification to users %s and %s after %d attempts", user1, user2, max_retries)
 
 
 def approve_application(request_id):
@@ -792,7 +838,7 @@ def approval_poller():
 
             # Approve when 2 people added AND image is uploaded
             if has_two_people and has_image:
-                logger.info("Approving reqid=%s for user=%s", reqid, user_id)
+                logger.info("Approving reqid=%s for user=%s (2 people added: %s, image: yes)", reqid, user_id, added_users[:2])
                 approve_application(reqid)
                 
                 # Send notification to the 2 added users after approval
