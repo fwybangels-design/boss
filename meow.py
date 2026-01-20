@@ -12,6 +12,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Timeout for all API requests (prevents hanging)
 REQUEST_TIMEOUT = 10  # seconds
 
+# Retry configuration for network requests
+MAX_REQUEST_RETRIES = 3  # Maximum number of retries for network requests
+RETRY_DELAY = 2  # Initial delay between retries (seconds), uses exponential backoff
+
 # ---------------------------
 # Configuration / constants
 # ---------------------------
@@ -101,14 +105,14 @@ TRACKING_SET_CLEANUP_INTERVAL = 300  # seconds (5 minutes)
 MAX_TRACKING_SET_SIZE = 10000  # Maximum entries in tracking sets before cleanup
 
 # Empty GC cleanup configuration
-EMPTY_GC_CLEANUP_INTERVAL = 600  # seconds (10 minutes) - check for empty GCs to leave
+EMPTY_GC_CLEANUP_INTERVAL = 600  # seconds (10 minutes) - check for empty GCs to leave after first scan
 EMPTY_GC_CLEANUP_ENABLED = True  # Set to False to disable empty GC cleanup
 
 last_save_time = time.time()  # Initialize to current time to prevent immediate save
 last_save_time_lock = threading.Lock()
 last_cleanup_time = time.time()
 last_cleanup_time_lock = threading.Lock()
-last_empty_gc_cleanup_time = time.time()
+last_empty_gc_cleanup_time = 0  # Set to 0 to trigger immediate cleanup on startup
 last_empty_gc_cleanup_time_lock = threading.Lock()
 
 # in-memory state
@@ -124,6 +128,17 @@ add_two_people_reminded_lock = threading.Lock()
 # NEW: track which users we've sent the "upload screenshot" reminder to (in-memory only)
 upload_screenshot_reminded = set()
 upload_screenshot_reminded_lock = threading.Lock()
+
+# NEW: track timestamps when reminders were first sent for 30-minute follow-ups
+# Format: {user_id: timestamp}
+add_two_people_reminder_times = {}
+add_two_people_reminder_times_lock = threading.Lock()
+
+upload_screenshot_reminder_times = {}
+upload_screenshot_reminder_times_lock = threading.Lock()
+
+# 30-minute follow-up reminder delay (in seconds)
+SECOND_REMINDER_DELAY = 30 * 60  # 30 minutes
 
 # Thread pool for approval checking to avoid creating new pools on each iteration
 approval_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="approval-")
@@ -252,6 +267,7 @@ def cleanup_empty_group_chats():
     """
     Clean up empty group chats where only the bot remains.
     Safely identifies and leaves GCs with only 1 recipient (the bot itself).
+    Also removes these users from open_interviews to prevent re-messaging.
     """
     global last_empty_gc_cleanup_time
     
@@ -285,11 +301,14 @@ def cleanup_empty_group_chats():
             logger.warning("Invalid channels response for empty GC cleanup")
             return
         
-        # Get currently active interview channels to protect them
+        # Get currently active interview channels
         with open_interviews_lock:
-            active_channels = {info.get("channel_id") for info in open_interviews.values() if info.get("channel_id")}
+            active_channel_to_user = {info.get("channel_id"): user_id 
+                                      for user_id, info in open_interviews.items() 
+                                      if info.get("channel_id")}
         
         empty_gcs_to_leave = []
+        users_to_remove = []
         
         # Find group DMs (type 3) with only 1 recipient (the bot itself)
         for channel in channels:
@@ -303,11 +322,6 @@ def cleanup_empty_group_chats():
             if channel_type != 3:
                 continue
             
-            # Skip if this is an active interview channel
-            if channel_id in active_channels:
-                logger.debug("Skipping active interview channel %s", channel_id)
-                continue
-            
             # Get recipients for this channel
             recipients = channel.get("recipients", [])
             
@@ -317,8 +331,39 @@ def cleanup_empty_group_chats():
             if len(recipients) == 0:
                 logger.info("Found empty GC %s with 0 recipients (only bot remaining)", channel_id)
                 empty_gcs_to_leave.append(channel_id)
+                
+                # If this is an active interview channel, mark user for removal
+                if channel_id in active_channel_to_user:
+                    user_id = active_channel_to_user[channel_id]
+                    users_to_remove.append(user_id)
+                    logger.info("Will remove user %s from open_interviews (empty GC)", user_id)
             else:
                 logger.debug("Channel %s has %d recipients, keeping", channel_id, len(recipients))
+        
+        # Remove users from open_interviews first (before leaving channels)
+        if users_to_remove:
+            with open_interviews_lock:
+                for user_id in users_to_remove:
+                    if user_id in open_interviews:
+                        del open_interviews[user_id]
+                        logger.info("Removed user %s from open_interviews (empty GC)", user_id)
+            
+            # Also remove from reminder tracking
+            with add_two_people_reminded_lock:
+                for user_id in users_to_remove:
+                    add_two_people_reminded.discard(user_id)
+            
+            with upload_screenshot_reminded_lock:
+                for user_id in users_to_remove:
+                    upload_screenshot_reminded.discard(user_id)
+            
+            with add_two_people_reminder_times_lock:
+                for user_id in users_to_remove:
+                    add_two_people_reminder_times.pop(user_id, None)
+            
+            with upload_screenshot_reminder_times_lock:
+                for user_id in users_to_remove:
+                    upload_screenshot_reminder_times.pop(user_id, None)
         
         # Leave empty GCs
         if empty_gcs_to_leave:
@@ -646,30 +691,58 @@ def message_already_sent(channel_id, content_without_mention, mention_user_id=No
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
-        _log_resp_short("message_already_sent", resp)
-        messages = resp.json() if resp and resp.status_code == 200 else []
-        if not isinstance(messages, list):
-            return False
-        for m in messages:
-            msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
-            if msg_ts < min_ts:
-                continue
-            if str(m.get("author", {}).get("id")) != str(OWN_USER_ID):
-                continue
-            msg_content = m.get("content", "") or ""
-            if mention_user_id:
-                mentions = m.get("mentions", []) or []
-                mentioned_ids = {str(u.get("id")) for u in mentions if isinstance(u, dict) and "id" in u}
-                if str(mention_user_id) not in mentioned_ids:
+    
+    # Retry with exponential backoff for SSL and transient errors
+    for attempt in range(MAX_REQUEST_RETRIES):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+            _log_resp_short("message_already_sent", resp)
+            
+            if resp and resp.status_code == 429:
+                try:
+                    data = resp.json()
+                    retry_after = float(data.get("retry_after", 2))
+                except Exception:
+                    retry_after = 2.0
+                logger.warning("Rate limited in message_already_sent, waiting %s seconds", retry_after)
+                time.sleep(retry_after)
+                continue  # Retry after rate limit
+            
+            messages = resp.json() if resp and resp.status_code == 200 else []
+            if not isinstance(messages, list):
+                if attempt < MAX_REQUEST_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (2 ** attempt))
                     continue
-            if content_without_mention in msg_content:
-                return True
-        return False
-    except Exception:
-        logger.exception("Exception in message_already_sent")
-        return False
+                return False
+            
+            for m in messages:
+                msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
+                if msg_ts < min_ts:
+                    continue
+                if str(m.get("author", {}).get("id")) != str(OWN_USER_ID):
+                    continue
+                msg_content = m.get("content", "") or ""
+                if mention_user_id:
+                    mentions = m.get("mentions", []) or []
+                    mentioned_ids = {str(u.get("id")) for u in mentions if isinstance(u, dict) and "id" in u}
+                    if str(mention_user_id) not in mentioned_ids:
+                        continue
+                if content_without_mention in msg_content:
+                    return True
+            return False
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning("Network error in message_already_sent (attempt %d/%d): %s", 
+                          attempt + 1, MAX_REQUEST_RETRIES, str(e))
+            if attempt < MAX_REQUEST_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))  # Exponential backoff
+        except Exception:
+            logger.exception("Exception in message_already_sent")
+            # When in doubt after exception, assume message was sent to avoid duplicates
+            logger.warning("Exception in message_already_sent - returning True to avoid duplicate messages")
+            return True
+    
+    logger.warning("Failed to check if message was sent after %d retries, assuming it was sent to avoid duplicates", MAX_REQUEST_RETRIES)
+    return True  # Assume message was sent to avoid duplicates
 
 def find_own_message_timestamp(channel_id, content_without_mention, mention_user_id=None):
     """
@@ -681,31 +754,57 @@ def find_own_message_timestamp(channel_id, content_without_mention, mention_user
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
-        _log_resp_short("find_own_message_timestamp", resp)
-        messages = resp.json() if resp and getattr(resp, "status_code", None) == 200 else []
-        if not isinstance(messages, list):
-            return 0.0
-        newest_ts = 0.0
-        for m in messages:
-            if str(m.get("author", {}).get("id")) != str(OWN_USER_ID):
-                continue
-            msg_content = m.get("content", "") or ""
-            if content_without_mention not in msg_content:
-                continue
-            if mention_user_id:
-                mentions = m.get("mentions", []) or []
-                mentioned_ids = {str(u.get("id")) for u in mentions if isinstance(u, dict) and "id" in u}
-                if str(mention_user_id) not in mentioned_ids:
+    
+    # Retry with exponential backoff for SSL and transient errors
+    for attempt in range(MAX_REQUEST_RETRIES):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+            _log_resp_short("find_own_message_timestamp", resp)
+            
+            if resp and resp.status_code == 429:
+                try:
+                    data = resp.json()
+                    retry_after = float(data.get("retry_after", 2))
+                except Exception:
+                    retry_after = 2.0
+                logger.warning("Rate limited in find_own_message_timestamp, waiting %s seconds", retry_after)
+                time.sleep(retry_after)
+                continue  # Retry after rate limit
+            
+            messages = resp.json() if resp and getattr(resp, "status_code", None) == 200 else []
+            if not isinstance(messages, list):
+                if attempt < MAX_REQUEST_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (2 ** attempt))
                     continue
-            msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
-            if msg_ts > newest_ts:
-                newest_ts = msg_ts
-        return newest_ts
-    except Exception:
-        logger.exception("[!] Exception in find_own_message_timestamp")
-        return 0.0
+                return 0.0
+            
+            newest_ts = 0.0
+            for m in messages:
+                if str(m.get("author", {}).get("id")) != str(OWN_USER_ID):
+                    continue
+                msg_content = m.get("content", "") or ""
+                if content_without_mention not in msg_content:
+                    continue
+                if mention_user_id:
+                    mentions = m.get("mentions", []) or []
+                    mentioned_ids = {str(u.get("id")) for u in mentions if isinstance(u, dict) and "id" in u}
+                    if str(mention_user_id) not in mentioned_ids:
+                        continue
+                msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
+                if msg_ts > newest_ts:
+                    newest_ts = msg_ts
+            return newest_ts
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning("Network error in find_own_message_timestamp (attempt %d/%d): %s", 
+                          attempt + 1, MAX_REQUEST_RETRIES, str(e))
+            if attempt < MAX_REQUEST_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))  # Exponential backoff
+        except Exception:
+            logger.exception("[!] Exception in find_own_message_timestamp")
+            return 0.0
+    
+    logger.warning("Failed to find own message timestamp after %d retries", MAX_REQUEST_RETRIES)
+    return 0.0
 
 def send_interview_message(channel_id, message, mention_user_id=None):
     headers = HEADERS_TEMPLATE.copy()
@@ -720,18 +819,43 @@ def send_interview_message(channel_id, message, mention_user_id=None):
     if mention_user_id:
         data["allowed_mentions"] = {"parse": [], "users": [str(mention_user_id)]}
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
-    try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
-        _log_resp_short(f"send_interview_message to {channel_id}", resp)
-        if getattr(resp, "status_code", None) in (200, 201):
-            logger.info("Sent message to channel %s", channel_id)
-            return True
-        else:
-            logger.warning("Failed to send message to %s status=%s", channel_id, getattr(resp, "status_code", "N/A"))
+    
+    # Retry with exponential backoff for SSL and transient errors
+    for attempt in range(MAX_REQUEST_RETRIES):
+        try:
+            resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=REQUEST_TIMEOUT)
+            _log_resp_short(f"send_interview_message to {channel_id}", resp)
+            
+            if getattr(resp, "status_code", None) == 429:
+                try:
+                    retry_data = resp.json()
+                    retry_after = float(retry_data.get("retry_after", 2))
+                except Exception:
+                    retry_after = 2.0
+                logger.warning("Rate limited in send_interview_message, waiting %s seconds", retry_after)
+                time.sleep(retry_after)
+                continue  # Retry after rate limit
+            
+            if getattr(resp, "status_code", None) in (200, 201):
+                logger.info("Sent message to channel %s", channel_id)
+                return True
+            else:
+                logger.warning("Failed to send message to %s status=%s", channel_id, getattr(resp, "status_code", "N/A"))
+                if attempt < MAX_REQUEST_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (2 ** attempt))
+                    continue
+                return False
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning("Network error in send_interview_message (attempt %d/%d): %s", 
+                          attempt + 1, MAX_REQUEST_RETRIES, str(e))
+            if attempt < MAX_REQUEST_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))  # Exponential backoff
+        except Exception:
+            logger.exception("Exception sending message")
             return False
-    except Exception:
-        logger.exception("Exception sending message")
-        return False
+    
+    logger.error("Failed to send message after %d retries", MAX_REQUEST_RETRIES)
+    return False
 
 def send_messages_batch(messages_to_send):
     """Send multiple messages concurrently. messages_to_send is a list of (channel_id, message, mention_user_id) tuples."""
@@ -855,37 +979,51 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
-        _log_resp_short("channel_has_image_from_user", resp)
-        if getattr(resp, "status_code", None) == 429:
-            try:
-                data = resp.json()
-                retry = float(data.get("retry_after", 2))
-            except Exception:
-                retry = 2.0
-            time.sleep(retry)
+    
+    # Retry with exponential backoff for SSL and transient errors
+    for attempt in range(MAX_REQUEST_RETRIES):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+            _log_resp_short("channel_has_image_from_user", resp)
+            
+            if getattr(resp, "status_code", None) == 429:
+                try:
+                    data = resp.json()
+                    retry = float(data.get("retry_after", 2))
+                except Exception:
+                    retry = 2.0
+                logger.warning("Rate limited in channel_has_image_from_user, waiting %s seconds", retry)
+                time.sleep(retry)
+                continue  # Retry after rate limit
+            
+            messages = resp.json() if getattr(resp, "status_code", None) == 200 else []
+            if not isinstance(messages, list):
+                return False
+            for m in messages:
+                msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
+                if msg_ts < min_ts:
+                    continue
+                if str(m.get("author", {}).get("id")) != str(user_id):
+                    continue
+                attachments = m.get("attachments", []) or []
+                for a in attachments:
+                    content_type = (a.get("content_type") or "").lower()
+                    filename = (a.get("filename") or "").lower()
+                    if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+                        logger.info("Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
+                        return True
             return False
-        messages = resp.json() if getattr(resp, "status_code", None) == 200 else []
-        if not isinstance(messages, list):
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning("Network error in channel_has_image_from_user (attempt %d/%d): %s", 
+                          attempt + 1, MAX_REQUEST_RETRIES, str(e))
+            if attempt < MAX_REQUEST_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))  # Exponential backoff
+        except Exception:
+            logger.exception("Exception in channel_has_image_from_user")
             return False
-        for m in messages:
-            msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
-            if msg_ts < min_ts:
-                continue
-            if str(m.get("author", {}).get("id")) != str(user_id):
-                continue
-            attachments = m.get("attachments", []) or []
-            for a in attachments:
-                content_type = (a.get("content_type") or "").lower()
-                filename = (a.get("filename") or "").lower()
-                if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
-                    logger.info("Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
-                    return True
-        return False
-    except Exception:
-        logger.exception("Exception in channel_has_image_from_user")
-        return False
+    
+    logger.error("Failed to check for image after %d retries, returning False to avoid duplicate messages", MAX_REQUEST_RETRIES)
+    return False
 
 def check_images_batch(channel_user_pairs):
     """Check for images in multiple channels concurrently."""
@@ -1277,14 +1415,23 @@ def approval_poller():
 
             # NEW: If image present but not 2 people added, send the "add 2 people" reminder once
             if has_image and not has_two_people:
-                # Check if reminder already sent (minimize lock time)
-                should_send = False
+                current_time = time.time()
+                # Check if first reminder already sent
+                should_send_first = False
+                should_send_second = False
+                
                 with add_two_people_reminded_lock:
                     if user_id not in add_two_people_reminded:
-                        should_send = True
+                        should_send_first = True
                 
-                if should_send:
-                    logger.info("Attempting add-2-people reminder for user %s in channel %s", user_id, channel_id)
+                with add_two_people_reminder_times_lock:
+                    first_reminder_time = add_two_people_reminder_times.get(user_id, None)
+                    if first_reminder_time and (current_time - first_reminder_time >= SECOND_REMINDER_DELAY):
+                        # 30 minutes have passed since first reminder, send second reminder
+                        should_send_second = True
+                
+                if should_send_first:
+                    logger.info("Attempting add-2-people reminder (first) for user %s in channel %s", user_id, channel_id)
                     reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
                     sent = False
                     try:
@@ -1294,20 +1441,46 @@ def approval_poller():
                     if sent:
                         with add_two_people_reminded_lock:
                             add_two_people_reminded.add(user_id)
-                        logger.info("Sent add-2-people reminder to user %s in channel %s", user_id, channel_id)
+                        with add_two_people_reminder_times_lock:
+                            add_two_people_reminder_times[user_id] = current_time
+                        logger.info("Sent add-2-people reminder (first) to user %s in channel %s", user_id, channel_id)
                     else:
                         logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
+                elif should_send_second:
+                    logger.info("Attempting add-2-people reminder (30-min follow-up) for user %s in channel %s", user_id, channel_id)
+                    reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
+                    sent = False
+                    try:
+                        sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
+                    except Exception:
+                        logger.exception("Exception while sending add-2-people follow-up reminder to %s", user_id)
+                    if sent:
+                        # Update timestamp so we don't send another for 30 minutes
+                        with add_two_people_reminder_times_lock:
+                            add_two_people_reminder_times[user_id] = current_time
+                        logger.info("Sent add-2-people reminder (30-min follow-up) to user %s in channel %s", user_id, channel_id)
+                    else:
+                        logger.warning("Failed to send add-2-people follow-up reminder to %s in channel %s; will retry later", user_id, channel_id)
             
             # NEW: If 2 people added but no image, send the "upload screenshot" reminder once
             elif has_two_people and not has_image:
-                # Check if reminder already sent (minimize lock time)
-                should_send = False
+                current_time = time.time()
+                # Check if first reminder already sent
+                should_send_first = False
+                should_send_second = False
+                
                 with upload_screenshot_reminded_lock:
                     if user_id not in upload_screenshot_reminded:
-                        should_send = True
+                        should_send_first = True
                 
-                if should_send:
-                    logger.info("Attempting upload-screenshot reminder for user %s in channel %s", user_id, channel_id)
+                with upload_screenshot_reminder_times_lock:
+                    first_reminder_time = upload_screenshot_reminder_times.get(user_id, None)
+                    if first_reminder_time and (current_time - first_reminder_time >= SECOND_REMINDER_DELAY):
+                        # 30 minutes have passed since first reminder, send second reminder
+                        should_send_second = True
+                
+                if should_send_first:
+                    logger.info("Attempting upload-screenshot reminder (first) for user %s in channel %s", user_id, channel_id)
                     reminder = f"<@{user_id}>\n{UPLOAD_SCREENSHOT_MESSAGE}"
                     sent = False
                     try:
@@ -1317,9 +1490,26 @@ def approval_poller():
                     if sent:
                         with upload_screenshot_reminded_lock:
                             upload_screenshot_reminded.add(user_id)
-                        logger.info("Sent upload-screenshot reminder to user %s in channel %s", user_id, channel_id)
+                        with upload_screenshot_reminder_times_lock:
+                            upload_screenshot_reminder_times[user_id] = current_time
+                        logger.info("Sent upload-screenshot reminder (first) to user %s in channel %s", user_id, channel_id)
                     else:
                         logger.warning("Failed to send upload-screenshot reminder to %s in channel %s; will retry later", user_id, channel_id)
+                elif should_send_second:
+                    logger.info("Attempting upload-screenshot reminder (30-min follow-up) for user %s in channel %s", user_id, channel_id)
+                    reminder = f"<@{user_id}>\n{UPLOAD_SCREENSHOT_MESSAGE}"
+                    sent = False
+                    try:
+                        sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
+                    except Exception:
+                        logger.exception("Exception while sending upload-screenshot follow-up reminder to %s", user_id)
+                    if sent:
+                        # Update timestamp so we don't send another for 30 minutes
+                        with upload_screenshot_reminder_times_lock:
+                            upload_screenshot_reminder_times[user_id] = current_time
+                        logger.info("Sent upload-screenshot reminder (30-min follow-up) to user %s in channel %s", user_id, channel_id)
+                    else:
+                        logger.warning("Failed to send upload-screenshot follow-up reminder to %s in channel %s; will retry later", user_id, channel_id)
 
             # Approve when 2 people added AND image is uploaded
             if has_two_people and has_image:
