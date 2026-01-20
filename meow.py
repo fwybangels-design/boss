@@ -4,8 +4,13 @@ import time
 import random
 import threading
 import logging
+import tempfile
+import os
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Timeout for all API requests (prevents hanging)
+REQUEST_TIMEOUT = 10  # seconds
 
 # ---------------------------
 # Configuration / constants
@@ -31,6 +36,10 @@ FOLLOW_UP_MESSAGE = ("-# Please upload the screenshot of you in the [Telegram ch
 ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add 2 people to this group DM so we can accept you.\n"
                           "-# uploading a screenshot alone isn't enough. If you've already added them, give it a moment to appear.")
 
+# NEW: special reminder message when a user adds 2 people but hasn't uploaded a screenshot yet
+UPLOAD_SCREENSHOT_MESSAGE = ("-# Great! We see you've added 2 people. Now please upload the screenshot of you in the [Telegram channel](https://t.me/addlist/kb2V8807oMg1NGYx) so we can approve you.\n"
+                             "-# If you've already uploaded it, give it a moment to appear.")
+
 COOKIES = {
     # ...your cookies here...
 }
@@ -51,7 +60,7 @@ HEADERS_TEMPLATE = {
 }
 
 POLL_INTERVAL = 1
-APPROVAL_POLL_INTERVAL = 0.2  # Fast approval detection when 2 people are added (reduced from 0.5s)
+APPROVAL_POLL_INTERVAL = 2.0  # Reduced API load - check every 2 seconds instead of 0.2s
 SEND_RETRY_DELAY = 1
 MAX_TOTAL_SEND_TIME = 180
 
@@ -83,6 +92,25 @@ initial_startup_lock = threading.Lock()
 # Persistent state file
 STATE_FILE = "meow_state.json"
 
+# Auto-save interval (save state every N seconds to handle restarts better)
+AUTO_SAVE_INTERVAL = 30  # seconds
+MAX_APPLICATION_PAGES = 10  # Maximum pages to fetch (10 pages * 100 = 1000 max applications)
+
+# Cleanup interval for tracking sets (prevent memory leaks)
+TRACKING_SET_CLEANUP_INTERVAL = 300  # seconds (5 minutes)
+MAX_TRACKING_SET_SIZE = 10000  # Maximum entries in tracking sets before cleanup
+
+# Empty GC cleanup configuration
+EMPTY_GC_CLEANUP_INTERVAL = 600  # seconds (10 minutes) - check for empty GCs to leave
+EMPTY_GC_CLEANUP_ENABLED = True  # Set to False to disable empty GC cleanup
+
+last_save_time = time.time()  # Initialize to current time to prevent immediate save
+last_save_time_lock = threading.Lock()
+last_cleanup_time = time.time()
+last_cleanup_time_lock = threading.Lock()
+last_empty_gc_cleanup_time = time.time()
+last_empty_gc_cleanup_time_lock = threading.Lock()
+
 # in-memory state
 seen_reqs = set()
 open_interviews = {}
@@ -92,6 +120,10 @@ seen_reqs_lock = threading.Lock()
 # NEW: track which users we've sent the "add 2 people" reminder to (in-memory only)
 add_two_people_reminded = set()
 add_two_people_reminded_lock = threading.Lock()
+
+# NEW: track which users we've sent the "upload screenshot" reminder to (in-memory only)
+upload_screenshot_reminded = set()
+upload_screenshot_reminded_lock = threading.Lock()
 
 # Thread pool for approval checking to avoid creating new pools on each iteration
 approval_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="approval-")
@@ -107,6 +139,7 @@ logger.addHandler(ch)
 # Helpers
 def save_state():
     """Save the current state to disk for persistence across restarts."""
+    global last_save_time
     try:
         # Acquire locks to prevent race conditions
         with seen_reqs_lock:
@@ -119,11 +152,190 @@ def save_state():
             "seen_reqs": seen_reqs_copy,
             "open_interviews": open_interviews_copy
         }
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f, indent=2)
-        logger.debug("State saved to %s", STATE_FILE)
+        
+        # Atomic write: write to temp file then rename (prevents corruption on crash)
+        temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(STATE_FILE) or '.', prefix='.meow_state_', suffix='.tmp')
+        try:
+            with os.fdopen(temp_fd, 'w') as f:
+                json.dump(state, f, indent=2)
+            os.replace(temp_path, STATE_FILE)  # Atomic rename
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+            raise
+        
+        # Update timestamp only after successful write
+        with last_save_time_lock:
+            last_save_time = time.time()
+        
+        logger.debug("State saved to %s (%d seen_reqs, %d open_interviews)", 
+                    STATE_FILE, len(seen_reqs_copy), len(open_interviews_copy))
     except Exception:
         logger.exception("Failed to save state")
+
+def auto_save_state_if_needed():
+    """Auto-save state if enough time has passed since last save."""
+    global last_save_time
+    with last_save_time_lock:
+        current_time = time.time()
+        time_since_last_save = current_time - last_save_time
+    
+    if time_since_last_save >= AUTO_SAVE_INTERVAL:
+        logger.debug("Auto-saving state (%.1fs since last save)", time_since_last_save)
+        save_state()
+
+def cleanup_tracking_sets():
+    """Clean up old entries from tracking sets to prevent memory leaks."""
+    global last_cleanup_time
+    
+    with last_cleanup_time_lock:
+        current_time = time.time()
+        time_since_last_cleanup = current_time - last_cleanup_time
+    
+    if time_since_last_cleanup < TRACKING_SET_CLEANUP_INTERVAL:
+        return  # Not time to cleanup yet
+    
+    try:
+        # Clean up seen_reqs by removing entries not in open_interviews
+        with open_interviews_lock:
+            active_user_ids = set(open_interviews.keys())
+        
+        # Note: seen_reqs stores request IDs not user IDs, so we use FIFO with cap
+        # Warning: Python sets are unordered in Python < 3.7, but insertion-ordered in 3.7+
+        # We rely on Python 3.7+ insertion order for FIFO cleanup
+        with seen_reqs_lock:
+            if len(seen_reqs) > MAX_TRACKING_SET_SIZE:
+                # Convert to list to maintain order (Python 3.7+ preserves insertion order in sets)
+                seen_reqs_list = list(seen_reqs)
+                keep_size = MAX_TRACKING_SET_SIZE // 2
+                seen_reqs.clear()
+                # Keep the most recent entries (last 50% of max size)
+                seen_reqs.update(seen_reqs_list[-keep_size:])
+                logger.info("Cleaned up seen_reqs: kept %d of %d entries", keep_size, len(seen_reqs_list))
+        
+        # Clean up reminder sets by removing inactive users
+        with add_two_people_reminded_lock:
+            add_two_people_reminded.intersection_update(active_user_ids)
+        
+        with upload_screenshot_reminded_lock:
+            upload_screenshot_reminded.intersection_update(active_user_ids)
+        
+        with last_cleanup_time_lock:
+            last_cleanup_time = time.time()
+        
+        logger.debug("Cleaned up tracking sets")
+    except Exception:
+        logger.exception("Failed to cleanup tracking sets")
+
+def leave_channel(channel_id):
+    """Leave a Discord channel/group DM."""
+    url = f"https://discord.com/api/v9/channels/{channel_id}"
+    headers = HEADERS_TEMPLATE.copy()
+    headers["content-type"] = "application/json"
+    try:
+        resp = requests.delete(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+        _log_resp_short(f"leave_channel {channel_id}", resp)
+        if resp and resp.status_code in (200, 204):
+            logger.info("Successfully left channel %s", channel_id)
+            return True
+        else:
+            logger.warning("Failed to leave channel %s status=%s", channel_id, getattr(resp, "status_code", "N/A"))
+            return False
+    except Exception:
+        logger.exception("Exception leaving channel %s", channel_id)
+        return False
+
+def cleanup_empty_group_chats():
+    """
+    Clean up empty group chats where only the bot remains.
+    Safely identifies and leaves GCs with only 1 recipient (the bot itself).
+    """
+    global last_empty_gc_cleanup_time
+    
+    if not EMPTY_GC_CLEANUP_ENABLED:
+        return  # Feature disabled
+    
+    with last_empty_gc_cleanup_time_lock:
+        current_time = time.time()
+        time_since_last_cleanup = current_time - last_empty_gc_cleanup_time
+    
+    if time_since_last_cleanup < EMPTY_GC_CLEANUP_INTERVAL:
+        return  # Not time to cleanup yet
+    
+    try:
+        logger.info("Checking for empty group chats to leave...")
+        
+        # Get all channels
+        url = "https://discord.com/api/v9/users/@me/channels"
+        headers = HEADERS_TEMPLATE.copy()
+        headers.pop("content-type", None)
+        
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+        _log_resp_short("cleanup_empty_group_chats", resp)
+        
+        if not resp or resp.status_code != 200:
+            logger.warning("Failed to fetch channels for empty GC cleanup")
+            return
+        
+        channels = resp.json() if isinstance(resp.text, str) else []
+        if not isinstance(channels, list):
+            logger.warning("Invalid channels response for empty GC cleanup")
+            return
+        
+        # Get currently active interview channels to protect them
+        with open_interviews_lock:
+            active_channels = {info.get("channel_id") for info in open_interviews.values() if info.get("channel_id")}
+        
+        empty_gcs_to_leave = []
+        
+        # Find group DMs (type 3) with only 1 recipient (the bot itself)
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            
+            channel_id = channel.get("id")
+            channel_type = channel.get("type")
+            
+            # Only process group DMs (type 3)
+            if channel_type != 3:
+                continue
+            
+            # Skip if this is an active interview channel
+            if channel_id in active_channels:
+                logger.debug("Skipping active interview channel %s", channel_id)
+                continue
+            
+            # Get recipients for this channel
+            recipients = channel.get("recipients", [])
+            
+            # Count recipients (should only have the bot if everyone left)
+            # Note: The bot itself is NOT included in the recipients list
+            # So if recipients is empty, it means only the bot is in the GC
+            if len(recipients) == 0:
+                logger.info("Found empty GC %s with 0 recipients (only bot remaining)", channel_id)
+                empty_gcs_to_leave.append(channel_id)
+            else:
+                logger.debug("Channel %s has %d recipients, keeping", channel_id, len(recipients))
+        
+        # Leave empty GCs
+        if empty_gcs_to_leave:
+            logger.info("Leaving %d empty group chat(s)", len(empty_gcs_to_leave))
+            for channel_id in empty_gcs_to_leave:
+                leave_channel(channel_id)
+                time.sleep(0.5)  # Rate limit protection
+        else:
+            logger.info("No empty group chats found to leave")
+        
+        # Update last cleanup time
+        with last_empty_gc_cleanup_time_lock:
+            last_empty_gc_cleanup_time = time.time()
+        
+        logger.debug("Empty GC cleanup completed")
+    except Exception:
+        logger.exception("Failed to cleanup empty group chats")
 
 def load_state():
     """Load state from disk on startup to resume incomplete applications."""
@@ -188,18 +400,65 @@ def _log_resp_short(prefix, resp):
 
 # API calls
 def get_pending_applications():
-    url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
+    """Fetch all pending applications with pagination to handle 250+ applications."""
+    all_apps = []
+    after = None
+    
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
-        _log_resp_short("get_pending_applications", resp)
-        data = resp.json() if resp and resp.status_code == 200 else {}
-        apps = data.get("guild_join_requests", []) if isinstance(data, dict) else []
-        return apps
-    except Exception:
-        logger.exception("Could not fetch pending applications")
-        return []
+    
+    for page in range(MAX_APPLICATION_PAGES):
+        try:
+            url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
+            if after:
+                url += f"&after={after}"
+            
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+            _log_resp_short(f"get_pending_applications (page {page + 1})", resp)
+            
+            if not resp or resp.status_code != 200:
+                break
+            
+            try:
+                data = resp.json()
+            except Exception:
+                logger.warning("Failed to parse JSON response on page %d", page + 1)
+                break
+                
+            apps = data.get("guild_join_requests", []) if isinstance(data, dict) else []
+            
+            if not apps:
+                break  # No more applications
+            
+            # Filter to only include applications with status SUBMITTED
+            # This prevents processing already approved/rejected applications
+            # Note: Discord API returns None for status field when application is SUBMITTED (default state)
+            filtered_apps = []
+            for app in apps:
+                status = app.get("application_status")
+                if status == "SUBMITTED" or status is None:  # None means default SUBMITTED state
+                    filtered_apps.append(app)
+                else:
+                    logger.debug("Skipping application %s with status %s", app.get("id"), status)
+            
+            all_apps.extend(filtered_apps)
+            logger.info("Fetched %d applications on page %d (total so far: %d)", len(filtered_apps), page + 1, len(all_apps))
+            
+            # Check if there are more pages
+            if len(apps) < 100:
+                break  # Last page (fewer than 100 results)
+            
+            # Use the last application's ID as the cursor for next page
+            after = apps[-1].get("id")
+            if not after:
+                break
+            
+        except Exception:
+            logger.exception("Error fetching pending applications page %d", page + 1)
+            break
+    
+    logger.info("Fetched total of %d pending applications", len(all_apps))
+    return all_apps
 
 def open_interview(request_id):
     url = f"https://discord.com/api/v9/join-requests/{request_id}/interview"
@@ -233,7 +492,7 @@ def find_existing_interview_channel(user_id):
     headers = HEADERS_TEMPLATE.copy()
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
         _log_resp_short("find_existing_interview_channel", resp)
         channels = resp.json() if resp and resp.status_code == 200 else []
         matches = []
@@ -267,7 +526,7 @@ def find_channels_batch(user_ids):
     headers.pop("content-type", None)
     
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
         _log_resp_short("find_channels_batch", resp)
         channels = resp.json() if resp and resp.status_code == 200 else []
         
@@ -334,6 +593,38 @@ def get_channel_recipients(channel_id):
     
     return []
 
+def get_channel_recipients_batch(channel_ids):
+    """Get recipients for multiple channels concurrently using thread pool."""
+    if not channel_ids:
+        return {}
+    
+    logger.debug("Getting recipients for %d channels concurrently", len(channel_ids))
+    channel_to_recipients = {}
+    
+    with ThreadPoolExecutor(max_workers=min(len(channel_ids), MAX_WORKERS)) as executor:
+        future_to_channel = {executor.submit(get_channel_recipients, cid): cid for cid in channel_ids}
+        for future in as_completed(future_to_channel):
+            channel_id = future_to_channel[future]
+            try:
+                recipients = future.result()
+                channel_to_recipients[channel_id] = recipients
+            except Exception:
+                logger.exception("Exception in batch channel recipients fetching for %s", channel_id)
+                channel_to_recipients[channel_id] = []
+    
+    return channel_to_recipients
+
+def filter_added_users(recipients, applicant_user_id):
+    """
+    Filter recipients to get only added users (excluding bot and applicant).
+    Returns list of added user IDs.
+    """
+    applicant_id_str = str(applicant_user_id)
+    return [
+        uid for uid in recipients 
+        if str(uid) != OWN_USER_ID_STR and str(uid) != applicant_id_str
+    ]
+
 def check_two_people_added(channel_id, applicant_user_id):
     """
     Check if the applicant has added 2 people to the group DM.
@@ -343,14 +634,7 @@ def check_two_people_added(channel_id, applicant_user_id):
     if not recipients:
         return False, []
     
-    # Convert applicant ID to string once for efficient comparison
-    applicant_id_str = str(applicant_user_id)
-    
-    # Filter out the bot and the applicant
-    added_users = [
-        uid for uid in recipients 
-        if str(uid) != OWN_USER_ID_STR and str(uid) != applicant_id_str
-    ]
+    added_users = filter_added_users(recipients, applicant_user_id)
     
     # Need at least 2 people added
     has_two_people = len(added_users) >= 2
@@ -363,7 +647,7 @@ def message_already_sent(channel_id, content_without_mention, mention_user_id=No
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
         _log_resp_short("message_already_sent", resp)
         messages = resp.json() if resp and resp.status_code == 200 else []
         if not isinstance(messages, list):
@@ -398,7 +682,7 @@ def find_own_message_timestamp(channel_id, content_without_mention, mention_user
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
         _log_resp_short("find_own_message_timestamp", resp)
         messages = resp.json() if resp and getattr(resp, "status_code", None) == 200 else []
         if not isinstance(messages, list):
@@ -555,7 +839,7 @@ def approve_application(request_id):
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     data = {"action": "APPROVED"}
     try:
-        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
+        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=REQUEST_TIMEOUT)
         _log_resp_short(f"approve_application {request_id}", resp)
         if getattr(resp, "status_code", None) == 200:
             logger.info("Approved application %s", request_id)
@@ -572,7 +856,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
         _log_resp_short("channel_has_image_from_user", resp)
         if getattr(resp, "status_code", None) == 429:
             try:
@@ -602,6 +886,32 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     except Exception:
         logger.exception("Exception in channel_has_image_from_user")
         return False
+
+def check_images_batch(channel_user_pairs):
+    """Check for images in multiple channels concurrently."""
+    if not channel_user_pairs:
+        return {}
+    
+    logger.debug("Checking images for %d channels concurrently", len(channel_user_pairs))
+    results = {}
+    
+    def check_image_for_pair(pair):
+        channel_id, user_id, min_ts = pair
+        has_image = channel_has_image_from_user(channel_id, user_id, min_ts)
+        return (channel_id, has_image)
+    
+    with ThreadPoolExecutor(max_workers=min(len(channel_user_pairs), MAX_WORKERS)) as executor:
+        futures = {executor.submit(check_image_for_pair, pair): pair for pair in channel_user_pairs}
+        for future in as_completed(futures):
+            try:
+                channel_id, has_image = future.result()
+                results[channel_id] = has_image
+            except Exception:
+                pair = futures[future]
+                logger.exception("Exception in batch image checking for channel %s", pair[0])
+                results[pair[0]] = False
+    
+    return results
 
 # ---------------------------
 # Main behaviors (staggered processing for stability on startup, instant for runtime)
@@ -653,6 +963,8 @@ def process_applications(applications, use_stagger=False):
                     open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                 with add_two_people_reminded_lock:
                     add_two_people_reminded.discard(user_id)
+                with upload_screenshot_reminded_lock:
+                    upload_screenshot_reminded.discard(user_id)
             else:
                 # Send initial message
                 composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
@@ -666,6 +978,8 @@ def process_applications(applications, use_stagger=False):
                         open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                     with add_two_people_reminded_lock:
                         add_two_people_reminded.discard(user_id)
+                    with upload_screenshot_reminded_lock:
+                        upload_screenshot_reminded.discard(user_id)
                     logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
                 else:
                     logger.warning("Failed to send message for user %s", user_id)
@@ -725,6 +1039,8 @@ def process_applications(applications, use_stagger=False):
                     open_interviews[user_id] = {"reqid": app['reqid'], "channel_id": channel_id, "opened_at": opened_at}
                 with add_two_people_reminded_lock:
                     add_two_people_reminded.discard(user_id)
+                with upload_screenshot_reminded_lock:
+                    upload_screenshot_reminded.discard(user_id)
             else:
                 composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
                 messages_to_send.append((channel_id, composed_message, user_id))
@@ -751,6 +1067,8 @@ def process_applications(applications, use_stagger=False):
                             open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                         with add_two_people_reminded_lock:
                             add_two_people_reminded.discard(user_id)
+                        with upload_screenshot_reminded_lock:
+                            upload_screenshot_reminded.discard(user_id)
                         logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
         
         # Save state after batch processing
@@ -768,52 +1086,55 @@ def process_applications(applications, use_stagger=False):
 
 def monitor_user_followup(user_id):
     """Monitor a user for image upload and send follow-up if needed."""
-    with open_interviews_lock:
-        if user_id not in open_interviews:
+    try:
+        with open_interviews_lock:
+            if user_id not in open_interviews:
+                return
+            info = open_interviews[user_id]
+            channel_id = info.get("channel_id")
+            opened_at = info.get("opened_at", time.time())
+        
+        if not channel_id:
             return
-        info = open_interviews[user_id]
-        channel_id = info.get("channel_id")
-        opened_at = info.get("opened_at", time.time())
-    
-    if not channel_id:
-        return
-    
-    follow_up_sent = False
-    monitor_start = time.time()
-    last_channel_check = monitor_start
-    
-    while True:
-        current_time = time.time()
-        if current_time - monitor_start >= MAX_TOTAL_SEND_TIME:
-            break
         
-        # refresh channel if user creates a new DM (but only periodically to reduce API calls)
-        if current_time - last_channel_check >= CHANNEL_REFRESH_INTERVAL:
-            new_channel = find_existing_interview_channel(user_id)
-            if new_channel and new_channel != channel_id:
-                logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
-                channel_id = new_channel
-                opened_at = time.time()
-                with open_interviews_lock:
-                    if user_id in open_interviews:
-                        open_interviews[user_id]["channel_id"] = channel_id
-                        open_interviews[user_id]["opened_at"] = opened_at
-            last_channel_check = current_time
+        follow_up_sent = False
+        monitor_start = time.time()
+        last_channel_check = monitor_start
         
-        if channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
-            logger.info("Image detected for user %s in channel %s; stopping monitor.", user_id, channel_id)
-            break
+        while True:
+            current_time = time.time()
+            if current_time - monitor_start >= MAX_TOTAL_SEND_TIME:
+                break
+            
+            # refresh channel if user creates a new DM (but only periodically to reduce API calls)
+            if current_time - last_channel_check >= CHANNEL_REFRESH_INTERVAL:
+                new_channel = find_existing_interview_channel(user_id)
+                if new_channel and new_channel != channel_id:
+                    logger.info("Switching to newer channel %s for user %s", new_channel, user_id)
+                    channel_id = new_channel
+                    opened_at = time.time()
+                    with open_interviews_lock:
+                        if user_id in open_interviews:
+                            open_interviews[user_id]["channel_id"] = channel_id
+                            open_interviews[user_id]["opened_at"] = opened_at
+                last_channel_check = current_time
+            
+            if channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
+                logger.info("Image detected for user %s in channel %s; stopping monitor.", user_id, channel_id)
+                break
+            
+            elapsed = current_time - monitor_start
+            if not follow_up_sent and elapsed >= FOLLOW_UP_DELAY:
+                # re-check immediately before sending follow-up to reduce races
+                if not channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
+                    followup_composed = f"<@{user_id}>\n{FOLLOW_UP_MESSAGE}"
+                    send_interview_message(channel_id, followup_composed, mention_user_id=user_id)
+                    follow_up_sent = True
+            time.sleep(MONITOR_POLL_INTERVAL)
         
-        elapsed = current_time - monitor_start
-        if not follow_up_sent and elapsed >= FOLLOW_UP_DELAY:
-            # re-check immediately before sending follow-up to reduce races
-            if not channel_has_image_from_user(channel_id, user_id, min_ts=opened_at):
-                followup_composed = f"<@{user_id}>\n{FOLLOW_UP_MESSAGE}"
-                send_interview_message(channel_id, followup_composed, mention_user_id=user_id)
-                follow_up_sent = True
-        time.sleep(MONITOR_POLL_INTERVAL)
-    
-    logger.info("Finished monitoring user %s", user_id)
+        logger.info("Finished monitoring user %s", user_id)
+    except Exception:
+        logger.exception("Exception in monitor_user_followup for user %s", user_id)
 
 def process_application(reqid, user_id):
     logger.info("Starting processing for reqid=%s user=%s", reqid, user_id)
@@ -931,8 +1252,12 @@ def approval_poller():
                         'opened_at': info.get("opened_at", 0.0)
                     })
         
+        # Batch fetch all channel recipients in parallel (major performance improvement)
+        channel_ids = [ud['channel_id'] for ud in user_data_list if ud.get('channel_id')]
+        channel_to_recipients = get_channel_recipients_batch(channel_ids)
+        
         # Process all users concurrently
-        def check_and_approve_user(user_data):
+        def check_and_approve_user(user_data, recipients_cache):
             user_id = user_data['user_id']
             reqid = user_data['reqid']
             channel_id = user_data['channel_id']
@@ -941,8 +1266,10 @@ def approval_poller():
             if not reqid or not channel_id:
                 return None
             
-            # Check if 2 people have been added to the group DM
-            has_two_people, added_users = check_two_people_added(channel_id, user_id)
+            # Use cached recipients from batch fetch
+            recipients = recipients_cache.get(channel_id, [])
+            added_users = filter_added_users(recipients, user_id)
+            has_two_people = len(added_users) >= 2
             
             has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
             logger.info("APPROVAL POLLER: user=%s has_two_people=%s has_image=%s added_users=%s", 
@@ -970,6 +1297,29 @@ def approval_poller():
                         logger.info("Sent add-2-people reminder to user %s in channel %s", user_id, channel_id)
                     else:
                         logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
+            
+            # NEW: If 2 people added but no image, send the "upload screenshot" reminder once
+            elif has_two_people and not has_image:
+                # Check if reminder already sent (minimize lock time)
+                should_send = False
+                with upload_screenshot_reminded_lock:
+                    if user_id not in upload_screenshot_reminded:
+                        should_send = True
+                
+                if should_send:
+                    logger.info("Attempting upload-screenshot reminder for user %s in channel %s", user_id, channel_id)
+                    reminder = f"<@{user_id}>\n{UPLOAD_SCREENSHOT_MESSAGE}"
+                    sent = False
+                    try:
+                        sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
+                    except Exception:
+                        logger.exception("Exception while sending upload-screenshot reminder to %s", user_id)
+                    if sent:
+                        with upload_screenshot_reminded_lock:
+                            upload_screenshot_reminded.add(user_id)
+                        logger.info("Sent upload-screenshot reminder to user %s in channel %s", user_id, channel_id)
+                    else:
+                        logger.warning("Failed to send upload-screenshot reminder to %s in channel %s; will retry later", user_id, channel_id)
 
             # Approve when 2 people added AND image is uploaded
             if has_two_people and has_image:
@@ -988,7 +1338,7 @@ def approval_poller():
         
         # Check all users concurrently using persistent thread pool
         to_remove = []
-        futures = {approval_executor.submit(check_and_approve_user, user_data): user_data['user_id'] for user_data in user_data_list}
+        futures = {approval_executor.submit(check_and_approve_user, user_data, channel_to_recipients): user_data['user_id'] for user_data in user_data_list}
         for future in as_completed(futures):
             try:
                 result = future.result()
@@ -1007,8 +1357,14 @@ def approval_poller():
             with add_two_people_reminded_lock:
                 for user_id in to_remove:
                     add_two_people_reminded.discard(user_id)
-            # Save state after removing completed applications
+            with upload_screenshot_reminded_lock:
+                for user_id in to_remove:
+                    upload_screenshot_reminded.discard(user_id)
+            # Save state immediately after removing completed applications
             save_state()
+        else:
+            # Auto-save periodically even if no removals
+            auto_save_state_if_needed()
         
         time.sleep(APPROVAL_POLL_INTERVAL)
 
@@ -1016,14 +1372,24 @@ def main():
     global initial_startup
     
     # Validate configuration at startup
+    # Note: TOKEN and GUILD_ID are initialized as empty strings above
+    # They should be set in the code or loaded from environment/config file before running
+    if not TOKEN or not GUILD_ID:
+        logger.error("TOKEN and GUILD_ID must be configured in the script before running!")
+        logger.error("Edit the TOKEN and GUILD_ID variables at the top of the file.")
+        raise ValueError("Missing required configuration: TOKEN or GUILD_ID")
+    
     if not SERVER_INVITE_LINK:
         logger.warning("SERVER_INVITE_LINK not configured. Notifications to added users will be skipped.")
+    
+    logger.info("Starting bot with GUILD_ID=%s, OWN_USER_ID=%s", GUILD_ID, OWN_USER_ID)
     
     # Load state from previous run to resume incomplete applications
     load_state()
     
     poller_thread = threading.Thread(target=approval_poller, daemon=True)
     poller_thread.start()
+    logger.info("Started approval poller thread.")
     logger.info("Starting main poller loop.")
     
     while True:
@@ -1036,6 +1402,12 @@ def main():
             user_id = app.get("user_id")
             if not reqid or not user_id:
                 continue
+
+            # Skip if already being processed
+            with open_interviews_lock:
+                if str(user_id) in open_interviews:
+                    logger.debug("Skipping application %s - already in open_interviews", reqid)
+                    continue
 
             with seen_reqs_lock:
                 if reqid in seen_reqs:
@@ -1062,6 +1434,15 @@ def main():
             
             thread.daemon = True
             thread.start()
+        
+        # Auto-save state periodically in main loop
+        auto_save_state_if_needed()
+        
+        # Clean up tracking sets periodically
+        cleanup_tracking_sets()
+        
+        # Clean up empty group chats periodically
+        cleanup_empty_group_chats()
         
         time.sleep(POLL_INTERVAL)
 
