@@ -108,9 +108,16 @@ logger.addHandler(ch)
 def save_state():
     """Save the current state to disk for persistence across restarts."""
     try:
+        # Acquire locks to prevent race conditions
+        with seen_reqs_lock:
+            seen_reqs_copy = list(seen_reqs)
+        
+        with open_interviews_lock:
+            open_interviews_copy = {k: v for k, v in open_interviews.items()}
+        
         state = {
-            "seen_reqs": list(seen_reqs),
-            "open_interviews": {k: v for k, v in open_interviews.items()}
+            "seen_reqs": seen_reqs_copy,
+            "open_interviews": open_interviews_copy
         }
         with open(STATE_FILE, 'w') as f:
             json.dump(state, f, indent=2)
@@ -130,12 +137,14 @@ def load_state():
         
         with open_interviews_lock:
             open_interviews = state.get("open_interviews", {})
+            # Get a copy of keys for safe iteration
+            user_ids_to_resume = list(open_interviews.keys())
         
         logger.info("State loaded from %s: %d seen_reqs, %d open_interviews", 
-                   STATE_FILE, len(seen_reqs), len(open_interviews))
+                   STATE_FILE, len(seen_reqs), len(user_ids_to_resume))
         
         # Resume monitoring for all incomplete interviews
-        for user_id in list(open_interviews.keys()):
+        for user_id in user_ids_to_resume:
             logger.info("Resuming monitoring for user %s", user_id)
             thread = threading.Thread(target=monitor_user_followup, args=(user_id,))
             thread.daemon = True
@@ -644,7 +653,6 @@ def process_applications(applications, use_stagger=False):
                     open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                 with add_two_people_reminded_lock:
                     add_two_people_reminded.discard(user_id)
-                save_state()  # Save state after each change
             else:
                 # Send initial message
                 composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
@@ -658,7 +666,6 @@ def process_applications(applications, use_stagger=False):
                         open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                     with add_two_people_reminded_lock:
                         add_two_people_reminded.discard(user_id)
-                    save_state()  # Save state after each change
                     logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
                 else:
                     logger.warning("Failed to send message for user %s", user_id)
@@ -673,6 +680,8 @@ def process_applications(applications, use_stagger=False):
             if i < len(applications) - 1:  # Don't delay after the last one
                 time.sleep(STAGGER_OPEN_DELAY)
         
+        # Save state once after processing entire batch (more efficient than per-application saves)
+        save_state()
         logger.info("Completed staggered processing of %d applications", len(applications))
     
     else:
