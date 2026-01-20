@@ -31,6 +31,10 @@ FOLLOW_UP_MESSAGE = ("-# Please upload the screenshot of you in the [Telegram ch
 ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add 2 people to this group DM so we can accept you.\n"
                           "-# uploading a screenshot alone isn't enough. If you've already added them, give it a moment to appear.")
 
+# NEW: special reminder message when a user adds 2 people but hasn't uploaded a screenshot yet
+UPLOAD_SCREENSHOT_MESSAGE = ("-# Great! We see you've added 2 people. Now please upload the screenshot of you in the [Telegram channel](https://t.me/addlist/kb2V8807oMg1NGYx) so we can approve you.\n"
+                             "-# If you've already uploaded it, give it a moment to appear.")
+
 COOKIES = {
     # ...your cookies here...
 }
@@ -92,6 +96,10 @@ seen_reqs_lock = threading.Lock()
 # NEW: track which users we've sent the "add 2 people" reminder to (in-memory only)
 add_two_people_reminded = set()
 add_two_people_reminded_lock = threading.Lock()
+
+# NEW: track which users we've sent the "upload screenshot" reminder to (in-memory only)
+upload_screenshot_reminded = set()
+upload_screenshot_reminded_lock = threading.Lock()
 
 # Thread pool for approval checking to avoid creating new pools on each iteration
 approval_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="approval-")
@@ -188,18 +196,50 @@ def _log_resp_short(prefix, resp):
 
 # API calls
 def get_pending_applications():
-    url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
+    """Fetch all pending applications with pagination to handle 250+ applications."""
+    all_apps = []
+    after = None
+    max_pages = 10  # Safety limit to prevent infinite loops (10 pages * 100 = 1000 max)
+    
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
-        _log_resp_short("get_pending_applications", resp)
-        data = resp.json() if resp and resp.status_code == 200 else {}
-        apps = data.get("guild_join_requests", []) if isinstance(data, dict) else []
-        return apps
-    except Exception:
-        logger.exception("Could not fetch pending applications")
-        return []
+    
+    for page in range(max_pages):
+        try:
+            url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
+            if after:
+                url += f"&after={after}"
+            
+            resp = requests.get(url, headers=headers, cookies=COOKIES)
+            _log_resp_short(f"get_pending_applications (page {page + 1})", resp)
+            
+            if not resp or resp.status_code != 200:
+                break
+            
+            data = resp.json() if isinstance(resp.text, str) else {}
+            apps = data.get("guild_join_requests", []) if isinstance(data, dict) else []
+            
+            if not apps:
+                break  # No more applications
+            
+            all_apps.extend(apps)
+            logger.info("Fetched %d applications on page %d (total so far: %d)", len(apps), page + 1, len(all_apps))
+            
+            # Check if there are more pages
+            if len(apps) < 100:
+                break  # Last page (fewer than 100 results)
+            
+            # Use the last application's ID as the cursor for next page
+            after = apps[-1].get("id")
+            if not after:
+                break
+            
+        except Exception:
+            logger.exception("Error fetching pending applications page %d", page + 1)
+            break
+    
+    logger.info("Fetched total of %d pending applications", len(all_apps))
+    return all_apps
 
 def open_interview(request_id):
     url = f"https://discord.com/api/v9/join-requests/{request_id}/interview"
@@ -333,6 +373,27 @@ def get_channel_recipients(channel_id):
                 time.sleep(0.5)
     
     return []
+
+def get_channel_recipients_batch(channel_ids):
+    """Get recipients for multiple channels concurrently using thread pool."""
+    if not channel_ids:
+        return {}
+    
+    logger.debug("Getting recipients for %d channels concurrently", len(channel_ids))
+    channel_to_recipients = {}
+    
+    with ThreadPoolExecutor(max_workers=min(len(channel_ids), MAX_WORKERS)) as executor:
+        future_to_channel = {executor.submit(get_channel_recipients, cid): cid for cid in channel_ids}
+        for future in as_completed(future_to_channel):
+            channel_id = future_to_channel[future]
+            try:
+                recipients = future.result()
+                channel_to_recipients[channel_id] = recipients
+            except Exception:
+                logger.exception("Exception in batch channel recipients fetching for %s", channel_id)
+                channel_to_recipients[channel_id] = []
+    
+    return channel_to_recipients
 
 def check_two_people_added(channel_id, applicant_user_id):
     """
@@ -653,6 +714,8 @@ def process_applications(applications, use_stagger=False):
                     open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                 with add_two_people_reminded_lock:
                     add_two_people_reminded.discard(user_id)
+                with upload_screenshot_reminded_lock:
+                    upload_screenshot_reminded.discard(user_id)
             else:
                 # Send initial message
                 composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
@@ -666,6 +729,8 @@ def process_applications(applications, use_stagger=False):
                         open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                     with add_two_people_reminded_lock:
                         add_two_people_reminded.discard(user_id)
+                    with upload_screenshot_reminded_lock:
+                        upload_screenshot_reminded.discard(user_id)
                     logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
                 else:
                     logger.warning("Failed to send message for user %s", user_id)
@@ -725,6 +790,8 @@ def process_applications(applications, use_stagger=False):
                     open_interviews[user_id] = {"reqid": app['reqid'], "channel_id": channel_id, "opened_at": opened_at}
                 with add_two_people_reminded_lock:
                     add_two_people_reminded.discard(user_id)
+                with upload_screenshot_reminded_lock:
+                    upload_screenshot_reminded.discard(user_id)
             else:
                 composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
                 messages_to_send.append((channel_id, composed_message, user_id))
@@ -751,6 +818,8 @@ def process_applications(applications, use_stagger=False):
                             open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
                         with add_two_people_reminded_lock:
                             add_two_people_reminded.discard(user_id)
+                        with upload_screenshot_reminded_lock:
+                            upload_screenshot_reminded.discard(user_id)
                         logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
         
         # Save state after batch processing
@@ -931,8 +1000,12 @@ def approval_poller():
                         'opened_at': info.get("opened_at", 0.0)
                     })
         
+        # Batch fetch all channel recipients in parallel (major performance improvement)
+        channel_ids = [ud['channel_id'] for ud in user_data_list if ud.get('channel_id')]
+        channel_to_recipients = get_channel_recipients_batch(channel_ids)
+        
         # Process all users concurrently
-        def check_and_approve_user(user_data):
+        def check_and_approve_user(user_data, recipients_cache):
             user_id = user_data['user_id']
             reqid = user_data['reqid']
             channel_id = user_data['channel_id']
@@ -941,8 +1014,14 @@ def approval_poller():
             if not reqid or not channel_id:
                 return None
             
-            # Check if 2 people have been added to the group DM
-            has_two_people, added_users = check_two_people_added(channel_id, user_id)
+            # Use cached recipients from batch fetch
+            recipients = recipients_cache.get(channel_id, [])
+            applicant_id_str = str(user_id)
+            added_users = [
+                uid for uid in recipients 
+                if str(uid) != OWN_USER_ID_STR and str(uid) != applicant_id_str
+            ]
+            has_two_people = len(added_users) >= 2
             
             has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
             logger.info("APPROVAL POLLER: user=%s has_two_people=%s has_image=%s added_users=%s", 
@@ -970,6 +1049,29 @@ def approval_poller():
                         logger.info("Sent add-2-people reminder to user %s in channel %s", user_id, channel_id)
                     else:
                         logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
+            
+            # NEW: If 2 people added but no image, send the "upload screenshot" reminder once
+            elif has_two_people and not has_image:
+                # Check if reminder already sent (minimize lock time)
+                should_send = False
+                with upload_screenshot_reminded_lock:
+                    if user_id not in upload_screenshot_reminded:
+                        should_send = True
+                
+                if should_send:
+                    logger.info("Attempting upload-screenshot reminder for user %s in channel %s", user_id, channel_id)
+                    reminder = f"<@{user_id}>\n{UPLOAD_SCREENSHOT_MESSAGE}"
+                    sent = False
+                    try:
+                        sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
+                    except Exception:
+                        logger.exception("Exception while sending upload-screenshot reminder to %s", user_id)
+                    if sent:
+                        with upload_screenshot_reminded_lock:
+                            upload_screenshot_reminded.add(user_id)
+                        logger.info("Sent upload-screenshot reminder to user %s in channel %s", user_id, channel_id)
+                    else:
+                        logger.warning("Failed to send upload-screenshot reminder to %s in channel %s; will retry later", user_id, channel_id)
 
             # Approve when 2 people added AND image is uploaded
             if has_two_people and has_image:
@@ -988,7 +1090,7 @@ def approval_poller():
         
         # Check all users concurrently using persistent thread pool
         to_remove = []
-        futures = {approval_executor.submit(check_and_approve_user, user_data): user_data['user_id'] for user_data in user_data_list}
+        futures = {approval_executor.submit(check_and_approve_user, user_data, channel_to_recipients): user_data['user_id'] for user_data in user_data_list}
         for future in as_completed(futures):
             try:
                 result = future.result()
@@ -1007,6 +1109,9 @@ def approval_poller():
             with add_two_people_reminded_lock:
                 for user_id in to_remove:
                     add_two_people_reminded.discard(user_id)
+            with upload_screenshot_reminded_lock:
+                for user_id in to_remove:
+                    upload_screenshot_reminded.discard(user_id)
             # Save state after removing completed applications
             save_state()
         
