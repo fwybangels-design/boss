@@ -12,6 +12,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Timeout for all API requests (prevents hanging)
 REQUEST_TIMEOUT = 10  # seconds
 
+# Retry configuration for network requests
+MAX_REQUEST_RETRIES = 3  # Maximum number of retries for network requests
+RETRY_DELAY = 2  # Initial delay between retries (seconds), uses exponential backoff
+
 # ---------------------------
 # Configuration / constants
 # ---------------------------
@@ -124,6 +128,17 @@ add_two_people_reminded_lock = threading.Lock()
 # NEW: track which users we've sent the "upload screenshot" reminder to (in-memory only)
 upload_screenshot_reminded = set()
 upload_screenshot_reminded_lock = threading.Lock()
+
+# NEW: track timestamps when reminders were first sent for 30-minute follow-ups
+# Format: {user_id: timestamp}
+add_two_people_reminder_times = {}
+add_two_people_reminder_times_lock = threading.Lock()
+
+upload_screenshot_reminder_times = {}
+upload_screenshot_reminder_times_lock = threading.Lock()
+
+# 30-minute follow-up reminder delay (in seconds)
+SECOND_REMINDER_DELAY = 30 * 60  # 30 minutes
 
 # Thread pool for approval checking to avoid creating new pools on each iteration
 approval_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="approval-")
