@@ -661,30 +661,58 @@ def message_already_sent(channel_id, content_without_mention, mention_user_id=No
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
-        _log_resp_short("message_already_sent", resp)
-        messages = resp.json() if resp and resp.status_code == 200 else []
-        if not isinstance(messages, list):
-            return False
-        for m in messages:
-            msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
-            if msg_ts < min_ts:
-                continue
-            if str(m.get("author", {}).get("id")) != str(OWN_USER_ID):
-                continue
-            msg_content = m.get("content", "") or ""
-            if mention_user_id:
-                mentions = m.get("mentions", []) or []
-                mentioned_ids = {str(u.get("id")) for u in mentions if isinstance(u, dict) and "id" in u}
-                if str(mention_user_id) not in mentioned_ids:
+    
+    # Retry with exponential backoff for SSL and transient errors
+    for attempt in range(MAX_REQUEST_RETRIES):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+            _log_resp_short("message_already_sent", resp)
+            
+            if resp and resp.status_code == 429:
+                try:
+                    data = resp.json()
+                    retry_after = float(data.get("retry_after", 2))
+                except Exception:
+                    retry_after = 2.0
+                logger.warning("Rate limited in message_already_sent, waiting %s seconds", retry_after)
+                time.sleep(retry_after)
+                continue  # Retry after rate limit
+            
+            messages = resp.json() if resp and resp.status_code == 200 else []
+            if not isinstance(messages, list):
+                if attempt < MAX_REQUEST_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (2 ** attempt))
                     continue
-            if content_without_mention in msg_content:
-                return True
-        return False
-    except Exception:
-        logger.exception("Exception in message_already_sent")
-        return False
+                return False
+            
+            for m in messages:
+                msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
+                if msg_ts < min_ts:
+                    continue
+                if str(m.get("author", {}).get("id")) != str(OWN_USER_ID):
+                    continue
+                msg_content = m.get("content", "") or ""
+                if mention_user_id:
+                    mentions = m.get("mentions", []) or []
+                    mentioned_ids = {str(u.get("id")) for u in mentions if isinstance(u, dict) and "id" in u}
+                    if str(mention_user_id) not in mentioned_ids:
+                        continue
+                if content_without_mention in msg_content:
+                    return True
+            return False
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning("Network error in message_already_sent (attempt %d/%d): %s", 
+                          attempt + 1, MAX_REQUEST_RETRIES, str(e))
+            if attempt < MAX_REQUEST_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))  # Exponential backoff
+        except Exception:
+            logger.exception("Exception in message_already_sent")
+            # When in doubt after exception, assume message was sent to avoid duplicates
+            logger.warning("Exception in message_already_sent - returning True to avoid duplicate messages")
+            return True
+    
+    logger.warning("Failed to check if message was sent after %d retries, assuming it was sent to avoid duplicates", MAX_REQUEST_RETRIES)
+    return True  # Assume message was sent to avoid duplicates
 
 def find_own_message_timestamp(channel_id, content_without_mention, mention_user_id=None):
     """
@@ -870,37 +898,51 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
-        _log_resp_short("channel_has_image_from_user", resp)
-        if getattr(resp, "status_code", None) == 429:
-            try:
-                data = resp.json()
-                retry = float(data.get("retry_after", 2))
-            except Exception:
-                retry = 2.0
-            time.sleep(retry)
+    
+    # Retry with exponential backoff for SSL and transient errors
+    for attempt in range(MAX_REQUEST_RETRIES):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+            _log_resp_short("channel_has_image_from_user", resp)
+            
+            if getattr(resp, "status_code", None) == 429:
+                try:
+                    data = resp.json()
+                    retry = float(data.get("retry_after", 2))
+                except Exception:
+                    retry = 2.0
+                logger.warning("Rate limited in channel_has_image_from_user, waiting %s seconds", retry)
+                time.sleep(retry)
+                continue  # Retry after rate limit
+            
+            messages = resp.json() if getattr(resp, "status_code", None) == 200 else []
+            if not isinstance(messages, list):
+                return False
+            for m in messages:
+                msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
+                if msg_ts < min_ts:
+                    continue
+                if str(m.get("author", {}).get("id")) != str(user_id):
+                    continue
+                attachments = m.get("attachments", []) or []
+                for a in attachments:
+                    content_type = (a.get("content_type") or "").lower()
+                    filename = (a.get("filename") or "").lower()
+                    if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+                        logger.info("Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
+                        return True
             return False
-        messages = resp.json() if getattr(resp, "status_code", None) == 200 else []
-        if not isinstance(messages, list):
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.warning("Network error in channel_has_image_from_user (attempt %d/%d): %s", 
+                          attempt + 1, MAX_REQUEST_RETRIES, str(e))
+            if attempt < MAX_REQUEST_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (2 ** attempt))  # Exponential backoff
+        except Exception:
+            logger.exception("Exception in channel_has_image_from_user")
             return False
-        for m in messages:
-            msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
-            if msg_ts < min_ts:
-                continue
-            if str(m.get("author", {}).get("id")) != str(user_id):
-                continue
-            attachments = m.get("attachments", []) or []
-            for a in attachments:
-                content_type = (a.get("content_type") or "").lower()
-                filename = (a.get("filename") or "").lower()
-                if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
-                    logger.info("Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
-                    return True
-        return False
-    except Exception:
-        logger.exception("Exception in channel_has_image_from_user")
-        return False
+    
+    logger.error("Failed to check for image after %d retries, returning False to avoid duplicate messages", MAX_REQUEST_RETRIES)
+    return False
 
 def check_images_batch(channel_user_pairs):
     """Check for images in multiple channels concurrently."""
