@@ -70,6 +70,14 @@ CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it'
 # Concurrent processing configuration
 MAX_WORKERS = 50  # Maximum number of concurrent threads for processing applications
 
+# NOTE: Thread Management Strategy
+# - Each active application gets 2 daemon threads (followup + approval monitoring)
+# - Daemon threads are lightweight (mostly sleeping) with minimal memory overhead (~8KB per thread)
+# - Threads auto-terminate when user approved or conditions not met
+# - In practice, active monitoring is bounded by pending applications (typically < 100)
+# - If thread exhaustion becomes an issue (>1000 concurrent apps), consider adding a Semaphore
+# - Current design prioritizes responsiveness over resource constraints
+
 # Batch processing timing constants
 CHANNEL_CREATION_DELAY = 0.5  # Delay after opening interviews to allow Discord to create channels
 MAX_CHANNEL_FIND_RETRIES = 5  # Maximum retries for finding newly created channels
@@ -84,9 +92,6 @@ seen_reqs_lock = threading.Lock()
 # NEW: track which users we've sent the "add 2 people" reminder to (in-memory only)
 add_two_people_reminded = set()
 add_two_people_reminded_lock = threading.Lock()
-
-# Thread pool for approval checking to avoid creating new pools on each iteration
-approval_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="approval-")
 
 # Logging
 VERBOSE = False
@@ -574,16 +579,25 @@ def process_application_batch(applications):
                         add_two_people_reminded.discard(user_id)
                     logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
     
-    # Step 7: Start monitoring threads for each application (limited by daemon threads)
-    # Note: These are lightweight monitoring threads that mostly sleep, so resource usage is minimal
+    # Step 7: Start monitoring threads for each application
+    # Each user gets TWO threads:
+    # 1. monitor_user_followup - sends follow-up message after delay if no image
+    # 2. monitor_user_approval - continuously checks for approval conditions (image + 2 people)
+    # This allows parallel processing with no bottleneck
     for app in applications:
         user_id = str(app['user_id'])
         if user_id in open_interviews:
-            thread = threading.Thread(target=monitor_user_followup, args=(user_id,))
-            thread.daemon = True
-            thread.start()
+            # Thread 1: Follow-up message monitoring
+            followup_thread = threading.Thread(target=monitor_user_followup, args=(user_id,))
+            followup_thread.daemon = True
+            followup_thread.start()
+            
+            # Thread 2: Approval condition monitoring (replaces global approval_poller)
+            approval_thread = threading.Thread(target=monitor_user_approval, args=(user_id,))
+            approval_thread.daemon = True
+            approval_thread.start()
     
-    logger.info("Completed batch processing of %d applications", len(applications))
+    logger.info("Completed batch processing of %d applications with parallel monitoring", len(applications))
 
 def monitor_user_followup(user_id):
     """Monitor a user for image upload and send follow-up if needed."""
@@ -728,115 +742,194 @@ def process_application(reqid, user_id):
 
     logger.info("Finished monitoring reqid=%s user=%s", reqid, user_id)
 
-def approval_poller():
-    logger.info("Started approval poller.")
+def monitor_user_approval(user_id):
+    """
+    Monitor a single user for approval conditions (image upload + 2 people added).
+    This runs in a separate thread per user for parallel processing.
+    """
+    logger.info("Started approval monitor for user %s", user_id)
+    
     while True:
+        # Get user info from open_interviews
         with open_interviews_lock:
-            keys = list(open_interviews.keys())
-        if not keys:
-            time.sleep(APPROVAL_POLL_INTERVAL)
-            continue
-
-        # Copy all user data once to minimize lock contention during concurrent processing
-        user_data_list = []
-        with open_interviews_lock:
-            for user_id in keys:
-                info = open_interviews.get(user_id)
-                if info:
-                    user_data_list.append({
-                        'user_id': user_id,
-                        'reqid': info.get("reqid"),
-                        'channel_id': info.get("channel_id"),
-                        'opened_at': info.get("opened_at", 0.0)
-                    })
+            if user_id not in open_interviews:
+                logger.info("User %s no longer in open_interviews, stopping approval monitor", user_id)
+                break
+            info = open_interviews.get(user_id, {})
+            reqid = info.get("reqid")
+            channel_id = info.get("channel_id")
+            opened_at = info.get("opened_at", 0.0)
         
-        # Process all users concurrently
-        def check_and_approve_user(user_data):
-            user_id = user_data['user_id']
-            reqid = user_data['reqid']
-            channel_id = user_data['channel_id']
-            opened_at = user_data['opened_at']
-            
-            if not reqid or not channel_id:
-                return None
-            
-            # Check if 2 people have been added to the group DM
-            has_two_people, added_users = check_two_people_added(channel_id, user_id)
-            
-            has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
-            logger.info("APPROVAL POLLER: user=%s has_two_people=%s has_image=%s added_users=%s", 
-                       user_id, has_two_people, has_image, len(added_users))
-
-            # NEW: If image present but not 2 people added, send the "add 2 people" reminder once
-            if has_image and not has_two_people:
-                # Check if reminder already sent (minimize lock time)
-                should_send = False
-                with add_two_people_reminded_lock:
-                    if user_id not in add_two_people_reminded:
-                        should_send = True
-                
-                if should_send:
-                    logger.info("Attempting add-2-people reminder for user %s in channel %s", user_id, channel_id)
-                    reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
-                    sent = False
-                    try:
-                        sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
-                    except Exception:
-                        logger.exception("Exception while sending add-2-people reminder to %s", user_id)
-                    if sent:
-                        with add_two_people_reminded_lock:
-                            add_two_people_reminded.add(user_id)
-                        logger.info("Sent add-2-people reminder to user %s in channel %s", user_id, channel_id)
-                    else:
-                        logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
-
-            # Approve when 2 people added AND image is uploaded
-            if has_two_people and has_image:
-                logger.info("Approving reqid=%s for user=%s", reqid, user_id)
-                approve_application(reqid)
-                
-                # Send notification to the 2 added users after approval
-                try:
-                    notify_added_users(user_id, channel_id)
-                except Exception:
-                    logger.exception("Exception while notifying added users for %s", user_id)
-                
-                return user_id  # Return user_id to mark for removal
-            
-            return None
+        if not reqid or not channel_id:
+            logger.warning("Missing reqid or channel_id for user %s, stopping approval monitor", user_id)
+            break
         
-        # Check all users concurrently using persistent thread pool
-        to_remove = []
-        futures = {approval_executor.submit(check_and_approve_user, user_data): user_data['user_id'] for user_data in user_data_list}
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                if result:
-                    to_remove.append(result)
-            except Exception:
-                logger.exception("Exception in approval checking")
+        # Check if 2 people have been added to the group DM
+        has_two_people, added_users = check_two_people_added(channel_id, user_id)
         
-        # Remove approved users
-        if to_remove:
-            with open_interviews_lock:
-                for user_id in to_remove:
-                    if user_id in open_interviews:
-                        del open_interviews[user_id]
-            # Clear reminder state for removed users
+        has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
+        logger.debug("APPROVAL MONITOR: user=%s has_two_people=%s has_image=%s added_users=%s", 
+                   user_id, has_two_people, has_image, len(added_users))
+
+        # If image present but not 2 people added, send the "add 2 people" reminder once
+        if has_image and not has_two_people:
+            # Check if reminder already sent
+            should_send = False
             with add_two_people_reminded_lock:
-                for user_id in to_remove:
-                    add_two_people_reminded.discard(user_id)
+                if user_id not in add_two_people_reminded:
+                    should_send = True
+            
+            if should_send:
+                logger.info("Sending add-2-people reminder for user %s in channel %s", user_id, channel_id)
+                reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
+                sent = False
+                try:
+                    sent = send_interview_message(channel_id, reminder, mention_user_id=user_id)
+                except Exception:
+                    logger.exception("Exception while sending add-2-people reminder to %s", user_id)
+                if sent:
+                    with add_two_people_reminded_lock:
+                        add_two_people_reminded.add(user_id)
+                    logger.info("Sent add-2-people reminder to user %s in channel %s", user_id, channel_id)
+                else:
+                    logger.warning("Failed to send add-2-people reminder to %s in channel %s; will retry later", user_id, channel_id)
+
+        # Approve when 2 people added AND image is uploaded
+        if has_two_people and has_image:
+            # Atomically check and remove user to prevent duplicate approvals
+            should_approve = False
+            with open_interviews_lock:
+                if user_id in open_interviews:
+                    del open_interviews[user_id]
+                    should_approve = True
+            
+            if not should_approve:
+                # Another thread already approved this user
+                logger.info("User %s already approved by another thread, stopping monitor", user_id)
+                break
+            
+            logger.info("✅ APPROVING reqid=%s for user=%s (has image + 2 people added)", reqid, user_id)
+            approve_application(reqid)
+            
+            # Send notification to the 2 added users after approval
+            try:
+                notify_added_users(user_id, channel_id)
+            except Exception:
+                logger.exception("Exception while notifying added users for %s", user_id)
+            
+            # Clear reminder state
+            with add_two_people_reminded_lock:
+                add_two_people_reminded.discard(user_id)
+            
+            logger.info("✅ User %s approved and removed from monitoring", user_id)
+            break
         
+        # Sleep before next check
         time.sleep(APPROVAL_POLL_INTERVAL)
+
+def recover_existing_interviews():
+    """
+    At startup, detect and recover any existing interview channels that may have been
+    opened before the bot restarted. This handles servers with 100+ applications smoothly.
+    
+    Returns a dict of user_id -> {reqid, channel_id, opened_at} for existing interviews.
+    """
+    logger.info("🔍 Scanning for existing interview channels at startup...")
+    
+    # Get all pending applications
+    apps = get_pending_applications()
+    if not apps:
+        logger.info("No pending applications found at startup")
+        return {}
+    
+    logger.info("📋 Found %d pending applications, checking for existing interviews", len(apps))
+    
+    # Get all user IDs from pending applications
+    pending_users = {}
+    for app in apps:
+        reqid = app.get("id")
+        user_id = app.get("user_id")
+        if reqid and user_id:
+            pending_users[str(user_id)] = reqid
+    
+    if not pending_users:
+        logger.info("No valid pending applications")
+        return {}
+    
+    # Find existing interview channels in batch (single API call)
+    user_ids = list(pending_users.keys())
+    logger.info("🔎 Checking %d users for existing interview channels...", len(user_ids))
+    user_to_channel = find_channels_batch(user_ids)
+    
+    # For each user with an existing channel, check if our message is already there
+    recovered = {}
+    for user_id, channel_id in user_to_channel.items():
+        if not channel_id:
+            continue
+        
+        # Check if our initial message is already in this channel
+        if message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
+            # Find the timestamp of our message
+            opened_at = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
+            if opened_at <= 0.0:
+                opened_at = time.time()
+            
+            reqid = pending_users.get(user_id)
+            if reqid:
+                recovered[user_id] = {
+                    "reqid": reqid,
+                    "channel_id": channel_id,
+                    "opened_at": opened_at
+                }
+                logger.info("♻️  Recovered existing interview: user=%s channel=%s reqid=%s", user_id, channel_id, reqid)
+    
+    if recovered:
+        logger.info("✅ Recovered %d existing interviews at startup", len(recovered))
+    else:
+        logger.info("No existing interviews to recover")
+    
+    return recovered
 
 def main():
     # Validate configuration at startup
     if not SERVER_INVITE_LINK:
         logger.warning("SERVER_INVITE_LINK not configured. Notifications to added users will be skipped.")
     
-    poller_thread = threading.Thread(target=approval_poller, daemon=True)
-    poller_thread.start()
-    logger.info("Starting main poller loop with concurrent batch processing enabled.")
+    # NEW: Recover existing interviews at startup (handles 100+ applications smoothly)
+    logger.info("=" * 60)
+    logger.info("🚀 Starting meow.py with improved parallel processing")
+    logger.info("=" * 60)
+    
+    recovered_interviews = recover_existing_interviews()
+    if recovered_interviews:
+        # Add recovered interviews to open_interviews and start monitoring
+        with open_interviews_lock:
+            open_interviews.update(recovered_interviews)
+        
+        # Mark these as seen so we don't process them again
+        with seen_reqs_lock:
+            for user_id, info in recovered_interviews.items():
+                seen_reqs.add(info["reqid"])
+        
+        # Start monitoring threads for each recovered interview
+        logger.info("🔄 Starting monitoring threads for %d recovered interviews", len(recovered_interviews))
+        for user_id in recovered_interviews:
+            # Start approval monitoring thread
+            approval_thread = threading.Thread(target=monitor_user_approval, args=(user_id,))
+            approval_thread.daemon = True
+            approval_thread.start()
+            
+            # Note: We don't start followup threads for recovered interviews since they're already past that phase
+        
+        logger.info("✅ Recovery complete, now monitoring %d users", len(recovered_interviews))
+    
+    # NO LONGER NEEDED: Old single approval_poller thread removed
+    # Now each user gets their own approval monitoring thread
+    
+    logger.info("=" * 60)
+    logger.info("🎯 Main poller loop starting (parallel processing enabled)")
+    logger.info("=" * 60)
+    
     while True:
         apps = get_pending_applications()
         
@@ -858,7 +951,7 @@ def main():
         
         # Process all new applications in batch for maximum speed
         if new_applications:
-            logger.info("Found %d new applications, processing in batch", len(new_applications))
+            logger.info("📥 Found %d new applications, processing in batch", len(new_applications))
             thread = threading.Thread(target=process_application_batch, args=(new_applications,))
             thread.daemon = True
             thread.start()
