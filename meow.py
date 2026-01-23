@@ -50,8 +50,8 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 0.05  # Fast polling for quick application detection (50ms) - 20 requests/sec
-APPROVAL_POLL_INTERVAL = 0.05  # Fast polling for quick image/2-people detection (50ms) - balances speed with API limits
+POLL_INTERVAL = 1.0  # Check for new applications every second (reasonable rate for Discord API)
+APPROVAL_POLL_INTERVAL = 0.05  # Fast polling for image/2-people detection (50ms) per user thread
 SEND_RETRY_DELAY = 0.5  # Faster retry for message sending
 MAX_TOTAL_SEND_TIME = 180
 
@@ -64,7 +64,7 @@ MAX_POLL_DELAY = 2.0  # Maximum delay balances API load with reasonable retry sp
 BACKOFF_MULTIPLIER = 2.0  # Aggressive backoff for efficient API usage (0.05→0.1→0.2→0.4→0.8→1.6→2.0s)
 
 # Monitoring loop configuration  
-MONITOR_POLL_INTERVAL = 0.05  # Fast polling for quick image detection (50ms) - balances speed with API limits
+MONITOR_POLL_INTERVAL = 0.05  # Fast polling for image detection (50ms) - per user thread, scales well
 CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it's a rare edge case
 
 # Concurrent processing configuration
@@ -146,7 +146,7 @@ def _log_resp_short(prefix, resp):
 def get_pending_applications():
     """
     Fetch all pending applications from Discord API with pagination.
-    Continues fetching until all applications are retrieved (potentially unlimited).
+    Handles rate limiting with exponential backoff.
     """
     all_apps = []
     after = None
@@ -164,6 +164,18 @@ def get_pending_applications():
         try:
             resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short(f"get_pending_applications (page {page_count + 1})", resp)
+            
+            # Handle rate limiting with exponential backoff
+            if resp and resp.status_code == 429:
+                try:
+                    data = resp.json()
+                    retry_after = float(data.get("retry_after", 5))
+                except Exception:
+                    retry_after = 5.0
+                logger.warning("⚠️ Rate limited fetching applications page %d, waiting %.1fs before retry", 
+                              page_count + 1, retry_after)
+                time.sleep(retry_after)
+                continue  # Retry this page
             
             if not resp or resp.status_code != 200:
                 logger.warning("Failed to fetch applications page %d, status=%s", page_count + 1, getattr(resp, "status_code", "N/A"))
@@ -636,97 +648,95 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
 # ---------------------------
 # Main behaviors (simple/original-style flow)
 # ---------------------------
+def process_application_independently(app):
+    """
+    Process a single application completely independently in its own thread.
+    No shared delays or waits with other applications.
+    """
+    reqid = app['reqid']
+    user_id = str(app['user_id'])
+    
+    logger.info("Starting independent processing for reqid=%s user=%s", reqid, user_id)
+    
+    # Step 1: Open interview
+    open_interview(reqid)
+    
+    # Step 2: Wait for channel to be created (this app waits independently)
+    time.sleep(CHANNEL_CREATION_DELAY)
+    
+    # Step 3: Find the channel (retry independently if needed)
+    channel_id = None
+    for retry in range(MAX_CHANNEL_FIND_RETRIES):
+        channel_id = find_existing_interview_channel(user_id)
+        if channel_id:
+            break
+        time.sleep(CHANNEL_FIND_RETRY_DELAY)
+    
+    if not channel_id:
+        logger.warning("Could not find channel for user %s after retries", user_id)
+        return
+    
+    # Step 4: Check if message already sent
+    if message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
+        prior_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
+        opened_at = prior_ts if prior_ts > 0.0 else time.time()
+        logger.info("Message already present in %s. Will not re-send.", channel_id)
+        with open_interviews_lock:
+            open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
+        with add_two_people_reminded_lock:
+            add_two_people_reminded.discard(user_id)
+    else:
+        # Step 5: Send message
+        composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
+        sent_ok = send_interview_message(channel_id, composed_message, mention_user_id=user_id)
+        
+        if not sent_ok:
+            logger.warning("Failed to send message to channel %s for user %s", channel_id, user_id)
+            return
+        
+        # Get timestamp of sent message
+        sent_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
+        opened_at = sent_ts if sent_ts > 0.0 else time.time()
+        
+        with open_interviews_lock:
+            open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
+        with add_two_people_reminded_lock:
+            add_two_people_reminded.discard(user_id)
+        logger.info("Sent message to %s for reqid=%s; opened_at=%s", channel_id, reqid, opened_at)
+    
+    # Step 6: Start independent monitoring threads for this user
+    # Thread 1: Follow-up message monitoring
+    followup_thread = threading.Thread(target=monitor_user_followup, args=(user_id,))
+    followup_thread.daemon = True
+    followup_thread.name = f"followup-{user_id[:8]}"
+    followup_thread.start()
+    
+    # Thread 2: Approval condition monitoring
+    approval_thread = threading.Thread(target=monitor_user_approval, args=(user_id,))
+    approval_thread.daemon = True
+    approval_thread.name = f"approval-{user_id[:8]}"
+    approval_thread.start()
+    
+    logger.info("Started independent monitoring threads for user %s", user_id)
+
 def process_application_batch(applications):
-    """Process multiple applications concurrently for maximum speed."""
+    """
+    Process multiple applications COMPLETELY INDEPENDENTLY.
+    Each application gets its own thread and doesn't wait for any other application.
+    """
     if not applications:
         return
     
-    logger.info("Processing %d applications concurrently", len(applications))
+    logger.info("Launching %d INDEPENDENT application threads (no shared waits)", len(applications))
     
-    # Step 1: Open all interviews concurrently
-    request_ids = [app['reqid'] for app in applications]
-    open_interviews_batch(request_ids)
-    
-    # Step 2: Wait a bit for channels to be created, then find all channels in one API call
-    time.sleep(CHANNEL_CREATION_DELAY)
-    user_ids = [app['user_id'] for app in applications]
-    user_to_channel = find_channels_batch(user_ids)
-    
-    # Step 3: For users without channels yet, retry a few times
-    missing_users = [uid for uid in user_ids if str(uid) not in user_to_channel]
-    retry_count = 0
-    while missing_users and retry_count < MAX_CHANNEL_FIND_RETRIES:
-        time.sleep(CHANNEL_FIND_RETRY_DELAY)
-        new_channels = find_channels_batch(missing_users)
-        user_to_channel.update(new_channels)
-        missing_users = [uid for uid in missing_users if str(uid) not in user_to_channel]
-        retry_count += 1
-    
-    # Step 4: Prepare messages to send
-    messages_to_send = []
+    # Launch a completely independent thread for each application
     for app in applications:
-        user_id = str(app['user_id'])
-        channel_id = user_to_channel.get(user_id)
-        if not channel_id:
-            logger.warning("Could not find channel for user %s after retries", user_id)
-            continue
-        
-        # Check if message already sent
-        if message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
-            prior_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
-            opened_at = prior_ts if prior_ts > 0.0 else time.time()
-            logger.info("Message already present in %s. Will not re-send.", channel_id)
-            with open_interviews_lock:
-                open_interviews[user_id] = {"reqid": app['reqid'], "channel_id": channel_id, "opened_at": opened_at}
-            with add_two_people_reminded_lock:
-                add_two_people_reminded.discard(user_id)
-        else:
-            composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
-            messages_to_send.append((channel_id, composed_message, user_id))
+        thread = threading.Thread(target=process_application_independently, args=(app,))
+        thread.daemon = True
+        thread.name = f"app-{app.get('user_id', 'unknown')[:8]}"
+        thread.start()
     
-    # Step 5: Send all messages concurrently
-    if messages_to_send:
-        send_results = send_messages_batch(messages_to_send)
-        
-        # Step 6: Register successful sends in open_interviews
-        for channel_id, message, user_id in messages_to_send:
-            if send_results.get(channel_id, False):
-                sent_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
-                opened_at = sent_ts if sent_ts > 0.0 else time.time()
-                
-                # Find the reqid for this user
-                reqid = None
-                for app in applications:
-                    if str(app['user_id']) == str(user_id):
-                        reqid = app['reqid']
-                        break
-                
-                if reqid:
-                    with open_interviews_lock:
-                        open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
-                    with add_two_people_reminded_lock:
-                        add_two_people_reminded.discard(user_id)
-                    logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
-    
-    # Step 7: Start monitoring threads for each application
-    # Each user gets TWO threads:
-    # 1. monitor_user_followup - sends follow-up message after delay if no image
-    # 2. monitor_user_approval - continuously checks for approval conditions (image + 2 people)
-    # This allows parallel processing with no bottleneck
-    for app in applications:
-        user_id = str(app['user_id'])
-        if user_id in open_interviews:
-            # Thread 1: Follow-up message monitoring
-            followup_thread = threading.Thread(target=monitor_user_followup, args=(user_id,))
-            followup_thread.daemon = True
-            followup_thread.start()
-            
-            # Thread 2: Approval condition monitoring (replaces global approval_poller)
-            approval_thread = threading.Thread(target=monitor_user_approval, args=(user_id,))
-            approval_thread.daemon = True
-            approval_thread.start()
-    
-    logger.info("Completed batch processing of %d applications with parallel monitoring", len(applications))
+    logger.info("All %d applications now processing independently", len(applications))
 
 def process_old_applications_slowly(applications):
     """
