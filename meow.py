@@ -50,9 +50,9 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 1
-APPROVAL_POLL_INTERVAL = 0.5  # Reduced from 2s to 0.5s for faster approval detection when 2 people are added
-SEND_RETRY_DELAY = 1
+POLL_INTERVAL = 0.1  # Ultra-fast polling for instant application detection
+APPROVAL_POLL_INTERVAL = 0.1  # Ultra-fast polling for instant image/2-people detection
+SEND_RETRY_DELAY = 0.5  # Faster retry for message sending
 MAX_TOTAL_SEND_TIME = 180
 
 # Optimized polling configuration for faster application opening
@@ -135,18 +135,68 @@ def _log_resp_short(prefix, resp):
 
 # API calls
 def get_pending_applications():
-    url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
-    headers = HEADERS_TEMPLATE.copy()
-    headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
-        _log_resp_short("get_pending_applications", resp)
-        data = resp.json() if resp and resp.status_code == 200 else {}
-        apps = data.get("guild_join_requests", []) if isinstance(data, dict) else []
-        return apps
-    except Exception:
-        logger.exception("Could not fetch pending applications")
-        return []
+    """
+    Fetch all pending applications from Discord API with pagination.
+    Continues fetching until all applications are retrieved (potentially unlimited).
+    """
+    all_apps = []
+    after = None
+    page_count = 0
+    
+    while True:
+        # Build URL with pagination
+        url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
+        if after:
+            url += f"&after={after}"
+        
+        headers = HEADERS_TEMPLATE.copy()
+        headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
+        
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            _log_resp_short(f"get_pending_applications (page {page_count + 1})", resp)
+            
+            if not resp or resp.status_code != 200:
+                logger.warning("Failed to fetch applications page %d, status=%s", page_count + 1, getattr(resp, "status_code", "N/A"))
+                break
+            
+            data = resp.json() if resp else {}
+            if not isinstance(data, dict):
+                break
+            
+            apps = data.get("guild_join_requests", [])
+            if not apps:
+                # No more applications to fetch
+                break
+            
+            all_apps.extend(apps)
+            page_count += 1
+            
+            # Check if there are more pages
+            # Discord pagination uses "after" cursor from the last item's ID
+            if len(apps) < 100:
+                # Last page (partial page)
+                break
+            
+            # Get the ID of the last application for pagination
+            last_app = apps[-1]
+            after = last_app.get("id")
+            if not after:
+                break
+            
+            logger.info("📄 Fetched page %d with %d applications (total so far: %d)", page_count, len(apps), len(all_apps))
+            
+            # Small delay between pages to avoid rate limiting
+            time.sleep(0.1)
+            
+        except Exception:
+            logger.exception("Exception fetching pending applications (page %d)", page_count + 1)
+            break
+    
+    if page_count > 0:
+        logger.info("✅ Fetched %d total applications across %d pages", len(all_apps), page_count)
+    
+    return all_apps
 
 def open_interview(request_id):
     url = f"https://discord.com/api/v9/join-requests/{request_id}/interview"
@@ -365,7 +415,7 @@ def send_interview_message(channel_id, message, mention_user_id=None):
         data["allowed_mentions"] = {"parse": [], "users": [str(mention_user_id)]}
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
+        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"send_interview_message to {channel_id}", resp)
         if getattr(resp, "status_code", None) in (200, 201):
             logger.info("Sent message to channel %s", channel_id)
@@ -409,19 +459,27 @@ def notify_added_users(applicant_user_id, channel_id):
     After an applicant is approved, notify the users that were added to the group DM
     by sending them a message asking them to join the server.
     """
+    logger.info("📧 notify_added_users called for applicant=%s channel=%s", applicant_user_id, channel_id)
+    
     if not SERVER_INVITE_LINK:
         logger.warning("SERVER_INVITE_LINK not configured. Skipping notification to added users.")
         return
     
     # Get the list of users who were added to the group DM
+    logger.info("🔍 Checking for added users in channel %s", channel_id)
     _, added_users = check_two_people_added(channel_id, applicant_user_id)
+    logger.info("✅ Found %d added users: %s", len(added_users), added_users)
+    
     if len(added_users) < 2:
-        logger.warning("Less than 2 people added to group DM for applicant %s, skipping notification", applicant_user_id)
+        logger.warning("⚠️  Less than 2 people added to group DM for applicant %s (found %d), skipping notification", 
+                      applicant_user_id, len(added_users))
         return
     
     # Take the first 2 users who were added
     user1 = added_users[0]
     user2 = added_users[1]
+    
+    logger.info("📨 Preparing to send notification to users %s and %s", user1, user2)
     
     # Send message mentioning the 2 users with the server invite
     message = f"<@{user1}> <@{user2}> join {SERVER_INVITE_LINK} so i can let u in"
@@ -438,15 +496,19 @@ def notify_added_users(applicant_user_id, channel_id):
         "allowed_mentions": {"parse": [], "users": [str(user1), str(user2)]}
     }
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
+    
+    logger.info("🚀 Sending notification message to channel %s", channel_id)
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
+        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"notify_added_users to {channel_id}", resp)
         if getattr(resp, "status_code", None) in (200, 201):
-            logger.info("Sent notification to users %s and %s in channel %s", user1, user2, channel_id)
+            logger.info("✅ Successfully sent notification to users %s and %s in channel %s", user1, user2, channel_id)
         else:
-            logger.warning("Failed to send notification status=%s", getattr(resp, "status_code", "N/A"))
+            logger.warning("❌ Failed to send notification status=%s response=%s", 
+                          getattr(resp, "status_code", "N/A"), 
+                          getattr(resp, "text", "N/A")[:200])
     except Exception:
-        logger.exception("Exception sending notification to added users")
+        logger.exception("❌ Exception sending notification to added users")
 
 
 def approve_application(request_id):
@@ -456,14 +518,14 @@ def approve_application(request_id):
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     data = {"action": "APPROVED"}
     try:
-        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data))
+        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"approve_application {request_id}", resp)
         if getattr(resp, "status_code", None) == 200:
-            logger.info("Approved application %s", request_id)
+            logger.info("✅ Approved application %s", request_id)
         else:
-            logger.warning("Failed to approve application %s status=%s", request_id, getattr(resp, "status_code", "N/A"))
+            logger.warning("❌ Failed to approve application %s status=%s", request_id, getattr(resp, "status_code", "N/A"))
     except Exception:
-        logger.exception("Exception approving application")
+        logger.exception("❌ Exception approving application %s", request_id)
 
 
 
@@ -768,8 +830,14 @@ def monitor_user_approval(user_id):
         has_two_people, added_users = check_two_people_added(channel_id, user_id)
         
         has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
-        logger.debug("APPROVAL MONITOR: user=%s has_two_people=%s has_image=%s added_users=%s", 
-                   user_id, has_two_people, has_image, len(added_users))
+        
+        # Log at INFO level when conditions change or initially
+        if has_two_people or has_image:
+            logger.info("APPROVAL MONITOR: user=%s has_two_people=%s (added=%s) has_image=%s", 
+                       user_id, has_two_people, added_users if has_two_people else "none", has_image)
+        else:
+            logger.debug("APPROVAL MONITOR: user=%s has_two_people=%s has_image=%s", 
+                        user_id, has_two_people, has_image)
 
         # If image present but not 2 people added, send the "add 2 people" reminder once
         if has_image and not has_two_people:
@@ -809,19 +877,27 @@ def monitor_user_approval(user_id):
                 break
             
             logger.info("✅ APPROVING reqid=%s for user=%s (has image + 2 people added)", reqid, user_id)
-            approve_application(reqid)
             
-            # Send notification to the 2 added users after approval
+            # Step 1: Approve the application
+            try:
+                approve_application(reqid)
+                logger.info("✅ Successfully approved application for user %s", user_id)
+            except Exception:
+                logger.exception("❌ Failed to approve application for user %s", user_id)
+            
+            # Step 2: Send notification to the 2 added users after approval
+            logger.info("📧 Sending notification to added users for user %s in channel %s", user_id, channel_id)
             try:
                 notify_added_users(user_id, channel_id)
+                logger.info("✅ Successfully sent notification to added users for user %s", user_id)
             except Exception:
-                logger.exception("Exception while notifying added users for %s", user_id)
+                logger.exception("❌ Exception while notifying added users for %s", user_id)
             
             # Clear reminder state
             with add_two_people_reminded_lock:
                 add_two_people_reminded.discard(user_id)
             
-            logger.info("✅ User %s approved and removed from monitoring", user_id)
+            logger.info("✅ User %s fully processed (approved + notified), removed from monitoring", user_id)
             break
         
         # Sleep before next check
