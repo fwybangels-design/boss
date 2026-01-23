@@ -50,21 +50,21 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 0.1  # Ultra-fast polling for instant application detection
-APPROVAL_POLL_INTERVAL = 0.1  # Ultra-fast polling for instant image/2-people detection
+POLL_INTERVAL = 1.0  # Check for new applications every second (reasonable rate for Discord API)
+APPROVAL_POLL_INTERVAL = 0.05  # Fast polling for image/2-people detection (50ms) per user thread
 SEND_RETRY_DELAY = 0.5  # Faster retry for message sending
 MAX_TOTAL_SEND_TIME = 180
 
 # Optimized polling configuration for faster application opening
-# Start with fast polling (0.1s) for immediate response in typical cases
+# Start with fast polling (0.05s) for quick response in typical cases
 # Use 2.0x backoff multiplier to quickly reduce API load while still being responsive
 # Cap at 2.0s to balance responsiveness with API efficiency
-INITIAL_POLL_DELAY = 0.1  # Initial delay provides near-instant response (100ms)
+INITIAL_POLL_DELAY = 0.05  # Initial delay provides quick response (50ms)
 MAX_POLL_DELAY = 2.0  # Maximum delay balances API load with reasonable retry speed
-BACKOFF_MULTIPLIER = 2.0  # Aggressive backoff for efficient API usage (0.1→0.2→0.4→0.8→1.6→2.0s)
+BACKOFF_MULTIPLIER = 2.0  # Aggressive backoff for efficient API usage (0.05→0.1→0.2→0.4→0.8→1.6→2.0s)
 
 # Monitoring loop configuration  
-MONITOR_POLL_INTERVAL = 0.1  # Ultra-fast polling for instant image detection
+MONITOR_POLL_INTERVAL = 0.05  # Fast polling for image detection (50ms) - per user thread, scales well
 CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it's a rare edge case
 
 # Concurrent processing configuration
@@ -82,6 +82,15 @@ MAX_WORKERS = 100  # Increased for handling many applications concurrently
 CHANNEL_CREATION_DELAY = 0.2  # Reduced delay after opening interviews to allow Discord to create channels
 MAX_CHANNEL_FIND_RETRIES = 8  # Increased retries with smaller delays for better reliability
 CHANNEL_FIND_RETRY_DELAY = 0.2  # Reduced delay between channel finding retries
+
+# Old application processing configuration
+# These settings control how old (pre-existing) applications are processed at startup
+# to avoid overwhelming Discord's API with too many requests at once.
+# Recommended ranges: OLD_APP_DELAY = 0.5-2.0 seconds, OLD_APP_BATCH_SIZE = 5-20 applications
+# For servers with 50-100+ unprocessed applications, use longer delays (1.5-2.0s) and smaller batches (5-10)
+# For servers with <20 unprocessed applications, shorter delays (0.5-1.0s) and larger batches (15-20) work well
+OLD_APP_DELAY = 1.0  # Delay in seconds between batches
+OLD_APP_BATCH_SIZE = 10  # Number of applications per batch
 
 # in-memory state only (matches original behavior)
 seen_reqs = set()
@@ -137,7 +146,7 @@ def _log_resp_short(prefix, resp):
 def get_pending_applications():
     """
     Fetch all pending applications from Discord API with pagination.
-    Continues fetching until all applications are retrieved (potentially unlimited).
+    Handles rate limiting with exponential backoff.
     """
     all_apps = []
     after = None
@@ -155,6 +164,18 @@ def get_pending_applications():
         try:
             resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short(f"get_pending_applications (page {page_count + 1})", resp)
+            
+            # Handle rate limiting with exponential backoff
+            if resp and resp.status_code == 429:
+                try:
+                    data = resp.json()
+                    retry_after = float(data.get("retry_after", 5))
+                except Exception:
+                    retry_after = 5.0
+                logger.warning("⚠️ Rate limited fetching applications page %d, waiting %.1fs before retry", 
+                              page_count + 1, retry_after)
+                time.sleep(retry_after)
+                continue  # Retry this page
             
             if not resp or resp.status_code != 200:
                 logger.warning("Failed to fetch applications page %d, status=%s", page_count + 1, getattr(resp, "status_code", "N/A"))
@@ -293,24 +314,51 @@ def find_channels_batch(user_ids):
         return {}
 
 def get_channel_recipients(channel_id):
-    """Get the list of recipient user IDs in a group DM channel."""
+    """Get the list of recipient user IDs in a group DM channel. Handles rate limits with retry."""
     url = f"https://discord.com/api/v9/channels/{channel_id}"
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    # Remove content-type header for GET requests (not needed and may cause issues)
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        _log_resp_short("get_channel_recipients", resp)
-        if resp and resp.status_code == 200:
-            channel_data = resp.json()
-            recipients = channel_data.get("recipients", [])
-            recipient_ids = [u.get("id") for u in recipients if isinstance(u, dict) and "id" in u]
-            return recipient_ids
-        return []
-    except Exception:
-        logger.exception("Exception getting channel recipients")
-        return []
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            _log_resp_short("get_channel_recipients", resp)
+            
+            # Handle rate limiting with retry
+            if resp and resp.status_code == 429:
+                try:
+                    data = resp.json()
+                    retry = float(data.get("retry_after", 2))
+                except Exception:
+                    retry = 2.0
+                logger.warning("Rate limited getting recipients for channel %s, retrying in %.1fs (attempt %d/%d)", 
+                              channel_id, retry, attempt + 1, max_retries)
+                time.sleep(retry)
+                continue
+            
+            if resp and resp.status_code == 200:
+                channel_data = resp.json()
+                recipients = channel_data.get("recipients", [])
+                recipient_ids = [u.get("id") for u in recipients if isinstance(u, dict) and "id" in u]
+                return recipient_ids
+            
+            logger.warning("Failed to get recipients from channel %s: status=%s (attempt %d/%d)", 
+                          channel_id, getattr(resp, "status_code", "N/A"), attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+            return []
+            
+        except Exception:
+            logger.exception("Exception getting channel recipients (attempt %d/%d)", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                time.sleep(1.0)
+                continue
+            return []
+    
+    return []
 
 def check_two_people_added(channel_id, applicant_user_id):
     """
@@ -530,136 +578,197 @@ def approve_application(request_id):
 
 
 def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
-    url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
+    """Check if user has sent an image in the channel after min_ts. Handles rate limits with retry."""
+    url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"  # Increased from 50 to 100
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        _log_resp_short("channel_has_image_from_user", resp)
-        if getattr(resp, "status_code", None) == 429:
-            try:
-                data = resp.json()
-                retry = float(data.get("retry_after", 2))
-            except Exception:
-                retry = 2.0
-            time.sleep(retry)
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            _log_resp_short("channel_has_image_from_user", resp)
+            
+            # Handle rate limiting with retry
+            if getattr(resp, "status_code", None) == 429:
+                try:
+                    data = resp.json()
+                    retry = float(data.get("retry_after", 2))
+                except Exception:
+                    retry = 2.0
+                logger.warning("Rate limited checking images in channel %s, retrying in %.1fs (attempt %d/%d)", 
+                              channel_id, retry, attempt + 1, max_retries)
+                time.sleep(retry)
+                continue  # Retry instead of returning False
+            
+            if getattr(resp, "status_code", None) != 200:
+                logger.warning("Failed to fetch messages from channel %s: status=%s (attempt %d/%d)", 
+                              channel_id, getattr(resp, "status_code", "N/A"), attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                return False
+            
+            messages = resp.json()
+            if not isinstance(messages, list):
+                logger.warning("Invalid message format from channel %s (attempt %d/%d)", 
+                              channel_id, attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+                    continue
+                return False
+            
+            # Check messages for images
+            for m in messages:
+                msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
+                if msg_ts < min_ts:
+                    continue
+                if str(m.get("author", {}).get("id")) != str(user_id):
+                    continue
+                attachments = m.get("attachments", []) or []
+                for a in attachments:
+                    content_type = (a.get("content_type") or "").lower()
+                    filename = (a.get("filename") or "").lower()
+                    if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+                        logger.info("✅ Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
+                        return True
             return False
-        messages = resp.json() if getattr(resp, "status_code", None) == 200 else []
-        if not isinstance(messages, list):
+            
+        except Exception:
+            logger.exception("Exception in channel_has_image_from_user (attempt %d/%d)", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                time.sleep(1.0)  # Wait before retry
+                continue
             return False
-        for m in messages:
-            msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
-            if msg_ts < min_ts:
-                continue
-            if str(m.get("author", {}).get("id")) != str(user_id):
-                continue
-            attachments = m.get("attachments", []) or []
-            for a in attachments:
-                content_type = (a.get("content_type") or "").lower()
-                filename = (a.get("filename") or "").lower()
-                if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
-                    logger.info("Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
-                    return True
-        return False
-    except Exception:
-        logger.exception("Exception in channel_has_image_from_user")
-        return False
+    
+    # Should not reach here, but return False as fallback
+    return False
 
 # ---------------------------
 # Main behaviors (simple/original-style flow)
 # ---------------------------
+def process_application_independently(app):
+    """
+    Process a single application completely independently in its own thread.
+    No shared delays or waits with other applications.
+    """
+    reqid = app['reqid']
+    user_id = str(app['user_id'])
+    
+    logger.info("Starting independent processing for reqid=%s user=%s", reqid, user_id)
+    
+    # Step 1: Open interview
+    open_interview(reqid)
+    
+    # Step 2: Wait for channel to be created (this app waits independently)
+    time.sleep(CHANNEL_CREATION_DELAY)
+    
+    # Step 3: Find the channel (retry independently if needed)
+    channel_id = None
+    for retry in range(MAX_CHANNEL_FIND_RETRIES):
+        channel_id = find_existing_interview_channel(user_id)
+        if channel_id:
+            break
+        time.sleep(CHANNEL_FIND_RETRY_DELAY)
+    
+    if not channel_id:
+        logger.warning("Could not find channel for user %s after retries", user_id)
+        return
+    
+    # Step 4: Check if message already sent
+    if message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
+        prior_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
+        opened_at = prior_ts if prior_ts > 0.0 else time.time()
+        logger.info("Message already present in %s. Will not re-send.", channel_id)
+        with open_interviews_lock:
+            open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
+        with add_two_people_reminded_lock:
+            add_two_people_reminded.discard(user_id)
+    else:
+        # Step 5: Send message
+        composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
+        sent_ok = send_interview_message(channel_id, composed_message, mention_user_id=user_id)
+        
+        if not sent_ok:
+            logger.warning("Failed to send message to channel %s for user %s", channel_id, user_id)
+            return
+        
+        # Get timestamp of sent message
+        sent_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
+        opened_at = sent_ts if sent_ts > 0.0 else time.time()
+        
+        with open_interviews_lock:
+            open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
+        with add_two_people_reminded_lock:
+            add_two_people_reminded.discard(user_id)
+        logger.info("Sent message to %s for reqid=%s; opened_at=%s", channel_id, reqid, opened_at)
+    
+    # Step 6: Start independent monitoring threads for this user
+    # Thread 1: Follow-up message monitoring
+    followup_thread = threading.Thread(target=monitor_user_followup, args=(user_id,))
+    followup_thread.daemon = True
+    followup_thread.name = f"followup-{user_id[:8]}"
+    followup_thread.start()
+    
+    # Thread 2: Approval condition monitoring
+    approval_thread = threading.Thread(target=monitor_user_approval, args=(user_id,))
+    approval_thread.daemon = True
+    approval_thread.name = f"approval-{user_id[:8]}"
+    approval_thread.start()
+    
+    logger.info("Started independent monitoring threads for user %s", user_id)
+
 def process_application_batch(applications):
-    """Process multiple applications concurrently for maximum speed."""
+    """
+    Process multiple applications COMPLETELY INDEPENDENTLY.
+    Each application gets its own thread and doesn't wait for any other application.
+    """
     if not applications:
         return
     
-    logger.info("Processing %d applications concurrently", len(applications))
+    logger.info("Launching %d INDEPENDENT application threads (no shared waits)", len(applications))
     
-    # Step 1: Open all interviews concurrently
-    request_ids = [app['reqid'] for app in applications]
-    open_interviews_batch(request_ids)
-    
-    # Step 2: Wait a bit for channels to be created, then find all channels in one API call
-    time.sleep(CHANNEL_CREATION_DELAY)
-    user_ids = [app['user_id'] for app in applications]
-    user_to_channel = find_channels_batch(user_ids)
-    
-    # Step 3: For users without channels yet, retry a few times
-    missing_users = [uid for uid in user_ids if str(uid) not in user_to_channel]
-    retry_count = 0
-    while missing_users and retry_count < MAX_CHANNEL_FIND_RETRIES:
-        time.sleep(CHANNEL_FIND_RETRY_DELAY)
-        new_channels = find_channels_batch(missing_users)
-        user_to_channel.update(new_channels)
-        missing_users = [uid for uid in missing_users if str(uid) not in user_to_channel]
-        retry_count += 1
-    
-    # Step 4: Prepare messages to send
-    messages_to_send = []
+    # Launch a completely independent thread for each application
     for app in applications:
-        user_id = str(app['user_id'])
-        channel_id = user_to_channel.get(user_id)
-        if not channel_id:
-            logger.warning("Could not find channel for user %s after retries", user_id)
-            continue
+        thread = threading.Thread(target=process_application_independently, args=(app,))
+        thread.daemon = True
+        thread.name = f"app-{app.get('user_id', 'unknown')[:8]}"
+        thread.start()
+    
+    logger.info("All %d applications now processing independently", len(applications))
+
+def process_old_applications_slowly(applications):
+    """
+    Process old applications with rate limiting to avoid overwhelming Discord API.
+    This is used at startup for applications that existed before the bot started.
+    """
+    if not applications:
+        logger.info("No old applications to process")
+        return
+    
+    total = len(applications)
+    logger.info("🐢 Processing %d old applications with rate limiting (slower to ensure all get opened)", total)
+    
+    # Process in smaller batches with delays between batches
+    for i in range(0, total, OLD_APP_BATCH_SIZE):
+        batch = applications[i:i+OLD_APP_BATCH_SIZE]
+        batch_num = i // OLD_APP_BATCH_SIZE + 1
+        total_batches = (total + OLD_APP_BATCH_SIZE - 1) // OLD_APP_BATCH_SIZE
         
-        # Check if message already sent
-        if message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
-            prior_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
-            opened_at = prior_ts if prior_ts > 0.0 else time.time()
-            logger.info("Message already present in %s. Will not re-send.", channel_id)
-            with open_interviews_lock:
-                open_interviews[user_id] = {"reqid": app['reqid'], "channel_id": channel_id, "opened_at": opened_at}
-            with add_two_people_reminded_lock:
-                add_two_people_reminded.discard(user_id)
-        else:
-            composed_message = f"<@{user_id}>\n{MESSAGE_CONTENT}"
-            messages_to_send.append((channel_id, composed_message, user_id))
-    
-    # Step 5: Send all messages concurrently
-    if messages_to_send:
-        send_results = send_messages_batch(messages_to_send)
+        logger.info("📦 Processing old application batch %d/%d (%d applications)", 
+                   batch_num, total_batches, len(batch))
         
-        # Step 6: Register successful sends in open_interviews
-        for channel_id, message, user_id in messages_to_send:
-            if send_results.get(channel_id, False):
-                sent_ts = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
-                opened_at = sent_ts if sent_ts > 0.0 else time.time()
-                
-                # Find the reqid for this user
-                reqid = None
-                for app in applications:
-                    if str(app['user_id']) == str(user_id):
-                        reqid = app['reqid']
-                        break
-                
-                if reqid:
-                    with open_interviews_lock:
-                        open_interviews[user_id] = {"reqid": reqid, "channel_id": channel_id, "opened_at": opened_at}
-                    with add_two_people_reminded_lock:
-                        add_two_people_reminded.discard(user_id)
-                    logger.info("Registered user %s (channel=%s, reqid=%s)", user_id, channel_id, reqid)
+        # Process this batch using the normal batch processing
+        process_application_batch(batch)
+        
+        # Add delay between batches (except after the last batch)
+        has_more_batches = (i + OLD_APP_BATCH_SIZE < total)
+        if has_more_batches:
+            logger.info("⏳ Waiting %.1f seconds before next batch of old applications...", OLD_APP_DELAY)
+            time.sleep(OLD_APP_DELAY)
     
-    # Step 7: Start monitoring threads for each application
-    # Each user gets TWO threads:
-    # 1. monitor_user_followup - sends follow-up message after delay if no image
-    # 2. monitor_user_approval - continuously checks for approval conditions (image + 2 people)
-    # This allows parallel processing with no bottleneck
-    for app in applications:
-        user_id = str(app['user_id'])
-        if user_id in open_interviews:
-            # Thread 1: Follow-up message monitoring
-            followup_thread = threading.Thread(target=monitor_user_followup, args=(user_id,))
-            followup_thread.daemon = True
-            followup_thread.start()
-            
-            # Thread 2: Approval condition monitoring (replaces global approval_poller)
-            approval_thread = threading.Thread(target=monitor_user_approval, args=(user_id,))
-            approval_thread.daemon = True
-            approval_thread.start()
-    
-    logger.info("Completed batch processing of %d applications with parallel monitoring", len(applications))
+    logger.info("✅ Completed processing all %d old applications", total)
 
 def monitor_user_followup(user_id):
     """Monitor a user for image upload and send follow-up if needed."""
@@ -908,7 +1017,9 @@ def recover_existing_interviews():
     At startup, detect and recover any existing interview channels that may have been
     opened before the bot restarted. This handles servers with 100+ applications smoothly.
     
-    Returns a dict of user_id -> {reqid, channel_id, opened_at} for existing interviews.
+    Returns a tuple of (recovered_dict, unprocessed_list):
+    - recovered_dict: user_id -> {reqid, channel_id, opened_at} for existing interviews
+    - unprocessed_list: list of {"reqid": ..., "user_id": ...} for applications that need to be opened
     """
     logger.info("🔍 Scanning for existing interview channels at startup...")
     
@@ -916,7 +1027,7 @@ def recover_existing_interviews():
     apps = get_pending_applications()
     if not apps:
         logger.info("No pending applications found at startup")
-        return {}
+        return {}, []
     
     logger.info("📋 Found %d pending applications, checking for existing interviews", len(apps))
     
@@ -930,7 +1041,7 @@ def recover_existing_interviews():
     
     if not pending_users:
         logger.info("No valid pending applications")
-        return {}
+        return {}, []
     
     # Find existing interview channels in batch (single API call)
     user_ids = list(pending_users.keys())
@@ -939,32 +1050,43 @@ def recover_existing_interviews():
     
     # For each user with an existing channel, check if our message is already there
     recovered = {}
-    for user_id, channel_id in user_to_channel.items():
-        if not channel_id:
+    unprocessed = []
+    
+    for user_id in user_ids:
+        reqid = pending_users.get(user_id)
+        if not reqid:
             continue
         
-        # Check if our initial message is already in this channel
-        if message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
+        channel_id = user_to_channel.get(user_id)
+        
+        # If there's a channel with our message, it's recovered
+        if channel_id and message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
             # Find the timestamp of our message
             opened_at = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
             if opened_at <= 0.0:
                 opened_at = time.time()
             
-            reqid = pending_users.get(user_id)
-            if reqid:
-                recovered[user_id] = {
-                    "reqid": reqid,
-                    "channel_id": channel_id,
-                    "opened_at": opened_at
-                }
-                logger.info("♻️  Recovered existing interview: user=%s channel=%s reqid=%s", user_id, channel_id, reqid)
+            recovered[user_id] = {
+                "reqid": reqid,
+                "channel_id": channel_id,
+                "opened_at": opened_at
+            }
+            logger.info("♻️  Recovered existing interview: user=%s channel=%s reqid=%s", user_id, channel_id, reqid)
+        else:
+            # This is an old application that was never processed
+            unprocessed.append({"reqid": reqid, "user_id": user_id})
     
     if recovered:
         logger.info("✅ Recovered %d existing interviews at startup", len(recovered))
     else:
         logger.info("No existing interviews to recover")
     
-    return recovered
+    if unprocessed:
+        logger.info("📝 Found %d old applications that need to be opened", len(unprocessed))
+    else:
+        logger.info("No old applications to process")
+    
+    return recovered, unprocessed
 
 def main():
     # Validate configuration at startup
@@ -976,7 +1098,9 @@ def main():
     logger.info("🚀 Starting meow.py with improved parallel processing")
     logger.info("=" * 60)
     
-    recovered_interviews = recover_existing_interviews()
+    recovered_interviews, unprocessed_apps = recover_existing_interviews()
+    
+    # Handle recovered interviews (already have channels)
     if recovered_interviews:
         # Add recovered interviews to open_interviews and start monitoring
         with open_interviews_lock:
@@ -998,6 +1122,22 @@ def main():
             # Note: We don't start followup threads for recovered interviews since they're already past that phase
         
         logger.info("✅ Recovery complete, now monitoring %d users", len(recovered_interviews))
+    
+    # Handle old unprocessed applications (need to open interviews)
+    if unprocessed_apps:
+        # Mark them as seen first to prevent the main loop from processing them concurrently
+        # Note: If bot crashes before processing completes, applications remain in Discord's SUBMITTED state
+        # and will be re-fetched and re-processed on next startup (safe to mark as seen here)
+        with seen_reqs_lock:
+            for app in unprocessed_apps:
+                seen_reqs.add(app["reqid"])
+        
+        # Process old applications slowly in a background thread
+        logger.info("🔄 Starting background thread to process %d old applications slowly", len(unprocessed_apps))
+        old_apps_thread = threading.Thread(target=process_old_applications_slowly, args=(unprocessed_apps,))
+        old_apps_thread.daemon = True
+        old_apps_thread.name = "old-apps-processor"
+        old_apps_thread.start()
     
     # NO LONGER NEEDED: Old single approval_poller thread removed
     # Now each user gets their own approval monitoring thread
