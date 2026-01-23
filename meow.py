@@ -86,9 +86,11 @@ CHANNEL_FIND_RETRY_DELAY = 0.2  # Reduced delay between channel finding retries
 # Old application processing configuration
 # These settings control how old (pre-existing) applications are processed at startup
 # to avoid overwhelming Discord's API with too many requests at once.
-# Adjust based on server size: smaller servers can use larger batches, larger servers may need longer delays
-OLD_APP_DELAY = 1.0  # Delay in seconds between batches (increase for very large servers with 100+ old apps)
-OLD_APP_BATCH_SIZE = 10  # Number of applications per batch (decrease if hitting rate limits)
+# Recommended ranges: OLD_APP_DELAY = 0.5-2.0 seconds, OLD_APP_BATCH_SIZE = 5-20 applications
+# For servers with 50-100+ unprocessed applications, use longer delays (1.5-2.0s) and smaller batches (5-10)
+# For servers with <20 unprocessed applications, shorter delays (0.5-1.0s) and larger batches (15-20) work well
+OLD_APP_DELAY = 1.0  # Delay in seconds between batches
+OLD_APP_BATCH_SIZE = 10  # Number of applications per batch
 
 # in-memory state only (matches original behavior)
 seen_reqs = set()
@@ -693,8 +695,8 @@ def process_old_applications_slowly(applications):
         process_application_batch(batch)
         
         # Add delay between batches (except after the last batch)
-        is_not_last_batch = (i + OLD_APP_BATCH_SIZE < total)
-        if is_not_last_batch:
+        has_more_batches = (i + OLD_APP_BATCH_SIZE < total)
+        if has_more_batches:
             logger.info("⏳ Waiting %.1f seconds before next batch of old applications...", OLD_APP_DELAY)
             time.sleep(OLD_APP_DELAY)
     
@@ -1055,7 +1057,9 @@ def main():
     
     # Handle old unprocessed applications (need to open interviews)
     if unprocessed_apps:
-        # Mark them as seen first to avoid duplicate processing
+        # Mark them as seen first to prevent the main loop from processing them concurrently
+        # Note: If bot crashes before processing completes, applications remain in Discord's SUBMITTED state
+        # and will be re-fetched and re-processed on next startup (safe to mark as seen here)
         with seen_reqs_lock:
             for app in unprocessed_apps:
                 seen_reqs.add(app["reqid"])
