@@ -83,6 +83,10 @@ CHANNEL_CREATION_DELAY = 0.2  # Reduced delay after opening interviews to allow 
 MAX_CHANNEL_FIND_RETRIES = 8  # Increased retries with smaller delays for better reliability
 CHANNEL_FIND_RETRY_DELAY = 0.2  # Reduced delay between channel finding retries
 
+# Old application processing configuration
+OLD_APP_DELAY = 1.0  # Delay between opening old applications to avoid rate limits (slower processing)
+OLD_APP_BATCH_SIZE = 10  # Process old applications in smaller batches for stability
+
 # in-memory state only (matches original behavior)
 seen_reqs = set()
 open_interviews = {}
@@ -661,6 +665,36 @@ def process_application_batch(applications):
     
     logger.info("Completed batch processing of %d applications with parallel monitoring", len(applications))
 
+def process_old_applications_slowly(applications):
+    """
+    Process old applications with rate limiting to avoid overwhelming Discord API.
+    This is used at startup for applications that existed before the bot started.
+    """
+    if not applications:
+        return
+    
+    total = len(applications)
+    logger.info("🐢 Processing %d old applications with rate limiting (slower to ensure all get opened)", total)
+    
+    # Process in smaller batches with delays between batches
+    for i in range(0, total, OLD_APP_BATCH_SIZE):
+        batch = applications[i:i+OLD_APP_BATCH_SIZE]
+        batch_num = i // OLD_APP_BATCH_SIZE + 1
+        total_batches = (total + OLD_APP_BATCH_SIZE - 1) // OLD_APP_BATCH_SIZE
+        
+        logger.info("📦 Processing old application batch %d/%d (%d applications)", 
+                   batch_num, total_batches, len(batch))
+        
+        # Process this batch using the normal batch processing
+        process_application_batch(batch)
+        
+        # Add delay between batches (except after the last batch)
+        if i + OLD_APP_BATCH_SIZE < total:
+            logger.info("⏳ Waiting %.1f seconds before next batch of old applications...", OLD_APP_DELAY)
+            time.sleep(OLD_APP_DELAY)
+    
+    logger.info("✅ Completed processing all %d old applications", total)
+
 def monitor_user_followup(user_id):
     """Monitor a user for image upload and send follow-up if needed."""
     with open_interviews_lock:
@@ -908,7 +942,9 @@ def recover_existing_interviews():
     At startup, detect and recover any existing interview channels that may have been
     opened before the bot restarted. This handles servers with 100+ applications smoothly.
     
-    Returns a dict of user_id -> {reqid, channel_id, opened_at} for existing interviews.
+    Returns a tuple of (recovered_dict, unprocessed_list):
+    - recovered_dict: user_id -> {reqid, channel_id, opened_at} for existing interviews
+    - unprocessed_list: list of {"reqid": ..., "user_id": ...} for applications that need to be opened
     """
     logger.info("🔍 Scanning for existing interview channels at startup...")
     
@@ -916,7 +952,7 @@ def recover_existing_interviews():
     apps = get_pending_applications()
     if not apps:
         logger.info("No pending applications found at startup")
-        return {}
+        return {}, []
     
     logger.info("📋 Found %d pending applications, checking for existing interviews", len(apps))
     
@@ -930,7 +966,7 @@ def recover_existing_interviews():
     
     if not pending_users:
         logger.info("No valid pending applications")
-        return {}
+        return {}, []
     
     # Find existing interview channels in batch (single API call)
     user_ids = list(pending_users.keys())
@@ -939,32 +975,43 @@ def recover_existing_interviews():
     
     # For each user with an existing channel, check if our message is already there
     recovered = {}
-    for user_id, channel_id in user_to_channel.items():
-        if not channel_id:
+    unprocessed = []
+    
+    for user_id in user_ids:
+        reqid = pending_users.get(user_id)
+        if not reqid:
             continue
         
-        # Check if our initial message is already in this channel
-        if message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
+        channel_id = user_to_channel.get(user_id)
+        
+        # If there's a channel with our message, it's recovered
+        if channel_id and message_already_sent(channel_id, MESSAGE_CONTENT, mention_user_id=user_id, min_ts=0.0):
             # Find the timestamp of our message
             opened_at = find_own_message_timestamp(channel_id, MESSAGE_CONTENT, mention_user_id=user_id)
             if opened_at <= 0.0:
                 opened_at = time.time()
             
-            reqid = pending_users.get(user_id)
-            if reqid:
-                recovered[user_id] = {
-                    "reqid": reqid,
-                    "channel_id": channel_id,
-                    "opened_at": opened_at
-                }
-                logger.info("♻️  Recovered existing interview: user=%s channel=%s reqid=%s", user_id, channel_id, reqid)
+            recovered[user_id] = {
+                "reqid": reqid,
+                "channel_id": channel_id,
+                "opened_at": opened_at
+            }
+            logger.info("♻️  Recovered existing interview: user=%s channel=%s reqid=%s", user_id, channel_id, reqid)
+        else:
+            # This is an old application that was never processed
+            unprocessed.append({"reqid": reqid, "user_id": user_id})
     
     if recovered:
         logger.info("✅ Recovered %d existing interviews at startup", len(recovered))
     else:
         logger.info("No existing interviews to recover")
     
-    return recovered
+    if unprocessed:
+        logger.info("📝 Found %d old applications that need to be opened", len(unprocessed))
+    else:
+        logger.info("No old applications to process")
+    
+    return recovered, unprocessed
 
 def main():
     # Validate configuration at startup
@@ -976,7 +1023,9 @@ def main():
     logger.info("🚀 Starting meow.py with improved parallel processing")
     logger.info("=" * 60)
     
-    recovered_interviews = recover_existing_interviews()
+    recovered_interviews, unprocessed_apps = recover_existing_interviews()
+    
+    # Handle recovered interviews (already have channels)
     if recovered_interviews:
         # Add recovered interviews to open_interviews and start monitoring
         with open_interviews_lock:
@@ -998,6 +1047,19 @@ def main():
             # Note: We don't start followup threads for recovered interviews since they're already past that phase
         
         logger.info("✅ Recovery complete, now monitoring %d users", len(recovered_interviews))
+    
+    # Handle old unprocessed applications (need to open interviews)
+    if unprocessed_apps:
+        # Mark them as seen first to avoid duplicate processing
+        with seen_reqs_lock:
+            for app in unprocessed_apps:
+                seen_reqs.add(app["reqid"])
+        
+        # Process old applications slowly in a background thread
+        logger.info("🔄 Starting background thread to process %d old applications slowly", len(unprocessed_apps))
+        old_apps_thread = threading.Thread(target=process_old_applications_slowly, args=(unprocessed_apps,))
+        old_apps_thread.daemon = True
+        old_apps_thread.start()
     
     # NO LONGER NEEDED: Old single approval_poller thread removed
     # Now each user gets their own approval monitoring thread
