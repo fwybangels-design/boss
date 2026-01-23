@@ -49,17 +49,23 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 1.0  # Check for new applications every second
-APPROVAL_POLL_INTERVAL = 0.2  # Fast polling for approval checking in single poller thread (was 2s in old version, 0.2s for responsiveness)
+POLL_INTERVAL = 0.1  # Check for new applications INSTANTLY (every 100ms) - 10x faster detection
+APPROVAL_POLL_INTERVAL = 0.2  # Fast polling for approval checking in single poller thread
 SEND_RETRY_DELAY = 1  # Retry delay for message sending
 MAX_TOTAL_SEND_TIME = 180
 
-# Channel finding configuration (simpler than old batch approach)
-CHANNEL_FIND_POLL_DELAY = 0.5  # Poll every 0.5s when waiting for channel to be created
-CHANNEL_FIND_TIMEOUT = 60  # Give up after 60s if channel not found
+# Channel finding configuration - OPTIMIZED FOR INSTANT OPENING
+CHANNEL_FIND_POLL_DELAY = 0.05  # Poll every 50ms for INSTANT channel detection (was 0.5s)
+CHANNEL_FIND_TIMEOUT = 30  # Reduced timeout since we're checking frequently
 
 # Follow-up message timing
 FOLLOW_UP_DELAY = 60  # Send follow-up reminder after 60 seconds if no screenshot uploaded
+
+# Startup handling for servers with MANY applications (300+)
+# These settings prevent "spazzing out" when starting with hundreds of pending apps
+STARTUP_BATCH_SIZE = 5  # Process 5 old applications at a time (small batches to avoid spam)
+STARTUP_BATCH_DELAY = 2.0  # Wait 2 seconds between batches (allows Discord API to breathe)
+MAX_STARTUP_APPS = 500  # Maximum applications to process at startup (safety limit)
 
 # in-memory state only (matches original behavior)
 seen_reqs = set()
@@ -591,7 +597,7 @@ def process_application(reqid, user_id):
 
     logger.info("Registered reqid=%s for user=%s (channel=%s opened_at=%s)", reqid, user_id, channel_id, opened_at)
 
-    # monitor for image and follow-up
+    # monitor for image and follow-up - FAST DETECTION
     follow_up_sent = False
     monitor_start = time.time()
     while time.time() - monitor_start < MAX_TOTAL_SEND_TIME:
@@ -617,7 +623,7 @@ def process_application(reqid, user_id):
                 followup_composed = f"<@{user_id}>\n{FOLLOW_UP_MESSAGE}"
                 send_interview_message(channel_id, followup_composed, mention_user_id=user_id)
                 follow_up_sent = True
-        time.sleep(2)
+        time.sleep(1)  # Check every 1 second - faster than old 2s but not too spammy
 
     logger.info("Finished monitoring reqid=%s user=%s", reqid, user_id)
 
@@ -688,12 +694,91 @@ def approval_poller():
                     add_two_people_reminded.discard(user_id)
         time.sleep(APPROVAL_POLL_INTERVAL)
 
+def process_startup_applications_slowly(applications):
+    """
+    Process applications that existed at startup with rate limiting.
+    This prevents overwhelming Discord API when starting with 300+ applications.
+    Processes in small batches with delays between batches.
+    """
+    if not applications:
+        logger.info("No startup applications to process")
+        return
+    
+    total = len(applications)
+    if total > MAX_STARTUP_APPS:
+        logger.warning("⚠️  Found %d startup applications, limiting to %d to prevent overload", total, MAX_STARTUP_APPS)
+        applications = applications[:MAX_STARTUP_APPS]
+        total = len(applications)
+    
+    logger.info("🐢 Processing %d startup applications SLOWLY to avoid API spam (batch size=%d, delay=%ds)", 
+                total, STARTUP_BATCH_SIZE, STARTUP_BATCH_DELAY)
+    
+    # Process in small batches with delays
+    for i in range(0, total, STARTUP_BATCH_SIZE):
+        batch = applications[i:i+STARTUP_BATCH_SIZE]
+        batch_num = (i // STARTUP_BATCH_SIZE) + 1
+        total_batches = (total + STARTUP_BATCH_SIZE - 1) // STARTUP_BATCH_SIZE
+        
+        logger.info("📦 Processing startup batch %d/%d (%d applications)", batch_num, total_batches, len(batch))
+        
+        # Launch threads for this batch
+        for app in batch:
+            reqid = app.get("reqid")
+            user_id = app.get("user_id")
+            thread = threading.Thread(target=process_application, args=(reqid, user_id))
+            thread.daemon = True
+            thread.start()
+        
+        # Delay between batches (except after last batch)
+        if i + STARTUP_BATCH_SIZE < total:
+            logger.info("⏳ Waiting %ds before next startup batch...", STARTUP_BATCH_DELAY)
+            time.sleep(STARTUP_BATCH_DELAY)
+    
+    logger.info("✅ Completed processing %d startup applications", total)
+
 def main():
     # Start single approval poller thread (like old friend_request_poller)
     poller_thread = threading.Thread(target=approval_poller, daemon=True)
     poller_thread.start()
-    logger.info("Starting main poller loop.")
+    logger.info("="*60)
+    logger.info("🚀 Starting meow.py - INSTANT detection + smooth 300+ app handling")
+    logger.info("="*60)
     
+    # Handle startup applications (could be 300+)
+    logger.info("🔍 Checking for existing applications at startup...")
+    startup_apps = get_pending_applications()
+    if startup_apps:
+        logger.info("📋 Found %d applications at startup", len(startup_apps))
+        
+        # Mark all as seen first, then process slowly
+        startup_to_process = []
+        with seen_reqs_lock:
+            for app in startup_apps:
+                reqid = app.get("id")
+                user_id = app.get("user_id")
+                if reqid and user_id and reqid not in seen_reqs:
+                    seen_reqs.add(reqid)
+                    startup_to_process.append({"reqid": reqid, "user_id": str(user_id)})
+        
+        if startup_to_process:
+            # Launch background thread to process startup apps slowly
+            startup_thread = threading.Thread(
+                target=process_startup_applications_slowly, 
+                args=(startup_to_process,),
+                daemon=True,
+                name="startup-processor"
+            )
+            startup_thread.start()
+        else:
+            logger.info("All startup applications already processed")
+    else:
+        logger.info("No applications at startup")
+    
+    logger.info("="*60)
+    logger.info("🎯 Main poller loop starting (INSTANT new application detection)")
+    logger.info("="*60)
+    
+    # Main loop for NEW applications (INSTANT processing)
     while True:
         apps = get_pending_applications()
         for app in apps:
@@ -709,6 +794,8 @@ def main():
                 # mark as seen immediately (prevents duplicate workers)
                 seen_reqs.add(reqid)
 
+            # NEW applications get INSTANT processing (no delays)
+            logger.info("⚡ NEW APPLICATION - Processing INSTANTLY: reqid=%s", reqid)
             thread = threading.Thread(target=process_application, args=(reqid, str(user_id)))
             thread.daemon = True
             thread.start()
