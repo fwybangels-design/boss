@@ -84,8 +84,11 @@ MAX_CHANNEL_FIND_RETRIES = 8  # Increased retries with smaller delays for better
 CHANNEL_FIND_RETRY_DELAY = 0.2  # Reduced delay between channel finding retries
 
 # Old application processing configuration
-OLD_APP_DELAY = 1.0  # Delay between opening old applications to avoid rate limits (slower processing)
-OLD_APP_BATCH_SIZE = 10  # Process old applications in smaller batches for stability
+# These settings control how old (pre-existing) applications are processed at startup
+# to avoid overwhelming Discord's API with too many requests at once.
+# Adjust based on server size: smaller servers can use larger batches, larger servers may need longer delays
+OLD_APP_DELAY = 1.0  # Delay in seconds between batches (increase for very large servers with 100+ old apps)
+OLD_APP_BATCH_SIZE = 10  # Number of applications per batch (decrease if hitting rate limits)
 
 # in-memory state only (matches original behavior)
 seen_reqs = set()
@@ -671,6 +674,7 @@ def process_old_applications_slowly(applications):
     This is used at startup for applications that existed before the bot started.
     """
     if not applications:
+        logger.info("No old applications to process")
         return
     
     total = len(applications)
@@ -689,7 +693,8 @@ def process_old_applications_slowly(applications):
         process_application_batch(batch)
         
         # Add delay between batches (except after the last batch)
-        if i + OLD_APP_BATCH_SIZE < total:
+        is_not_last_batch = (i + OLD_APP_BATCH_SIZE < total)
+        if is_not_last_batch:
             logger.info("⏳ Waiting %.1f seconds before next batch of old applications...", OLD_APP_DELAY)
             time.sleep(OLD_APP_DELAY)
     
@@ -1059,6 +1064,7 @@ def main():
         logger.info("🔄 Starting background thread to process %d old applications slowly", len(unprocessed_apps))
         old_apps_thread = threading.Thread(target=process_old_applications_slowly, args=(unprocessed_apps,))
         old_apps_thread.daemon = True
+        old_apps_thread.name = "old-apps-processor"
         old_apps_thread.start()
     
     # NO LONGER NEEDED: Old single approval_poller thread removed
