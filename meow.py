@@ -186,8 +186,8 @@ def get_pending_applications():
             
             logger.info("📄 Fetched page %d with %d applications (total so far: %d)", page_count, len(apps), len(all_apps))
             
-            # Small delay between pages to avoid rate limiting
-            time.sleep(0.1)
+            # Small delay between pages to avoid rate limiting (only happens on startup for 100+ apps)
+            time.sleep(0.2)
             
         except Exception:
             logger.exception("Exception fetching pending applications (page %d)", page_count + 1)
