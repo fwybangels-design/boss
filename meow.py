@@ -50,21 +50,21 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 0.05  # Instant polling for immediate application detection (50ms)
-APPROVAL_POLL_INTERVAL = 0.01  # Near-instant polling for immediate image/2-people detection (10ms)
+POLL_INTERVAL = 0.05  # Fast polling for quick application detection (50ms) - 20 requests/sec
+APPROVAL_POLL_INTERVAL = 0.05  # Fast polling for quick image/2-people detection (50ms) - balances speed with API limits
 SEND_RETRY_DELAY = 0.5  # Faster retry for message sending
 MAX_TOTAL_SEND_TIME = 180
 
 # Optimized polling configuration for faster application opening
-# Start with fast polling (0.1s) for immediate response in typical cases
+# Start with fast polling (0.05s) for quick response in typical cases
 # Use 2.0x backoff multiplier to quickly reduce API load while still being responsive
 # Cap at 2.0s to balance responsiveness with API efficiency
-INITIAL_POLL_DELAY = 0.05  # Initial delay provides near-instant response (50ms)
+INITIAL_POLL_DELAY = 0.05  # Initial delay provides quick response (50ms)
 MAX_POLL_DELAY = 2.0  # Maximum delay balances API load with reasonable retry speed
 BACKOFF_MULTIPLIER = 2.0  # Aggressive backoff for efficient API usage (0.05→0.1→0.2→0.4→0.8→1.6→2.0s)
 
 # Monitoring loop configuration  
-MONITOR_POLL_INTERVAL = 0.01  # Near-instant polling for immediate image detection (10ms)
+MONITOR_POLL_INTERVAL = 0.05  # Fast polling for quick image detection (50ms) - balances speed with API limits
 CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it's a rare edge case
 
 # Concurrent processing configuration
