@@ -70,6 +70,14 @@ CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it'
 # Concurrent processing configuration
 MAX_WORKERS = 50  # Maximum number of concurrent threads for processing applications
 
+# NOTE: Thread Management Strategy
+# - Each active application gets 2 daemon threads (followup + approval monitoring)
+# - Daemon threads are lightweight (mostly sleeping) with minimal memory overhead (~8KB per thread)
+# - Threads auto-terminate when user approved or conditions not met
+# - In practice, active monitoring is bounded by pending applications (typically < 100)
+# - If thread exhaustion becomes an issue (>1000 concurrent apps), consider adding a Semaphore
+# - Current design prioritizes responsiveness over resource constraints
+
 # Batch processing timing constants
 CHANNEL_CREATION_DELAY = 0.5  # Delay after opening interviews to allow Discord to create channels
 MAX_CHANNEL_FIND_RETRIES = 5  # Maximum retries for finding newly created channels
@@ -747,7 +755,7 @@ def monitor_user_approval(user_id):
             if user_id not in open_interviews:
                 logger.info("User %s no longer in open_interviews, stopping approval monitor", user_id)
                 break
-            info = open_interviews[user_id]
+            info = open_interviews.get(user_id, {})
             reqid = info.get("reqid")
             channel_id = info.get("channel_id")
             opened_at = info.get("opened_at", 0.0)
@@ -788,6 +796,18 @@ def monitor_user_approval(user_id):
 
         # Approve when 2 people added AND image is uploaded
         if has_two_people and has_image:
+            # Atomically check and remove user to prevent duplicate approvals
+            should_approve = False
+            with open_interviews_lock:
+                if user_id in open_interviews:
+                    del open_interviews[user_id]
+                    should_approve = True
+            
+            if not should_approve:
+                # Another thread already approved this user
+                logger.info("User %s already approved by another thread, stopping monitor", user_id)
+                break
+            
             logger.info("✅ APPROVING reqid=%s for user=%s (has image + 2 people added)", reqid, user_id)
             approve_application(reqid)
             
@@ -796,11 +816,6 @@ def monitor_user_approval(user_id):
                 notify_added_users(user_id, channel_id)
             except Exception:
                 logger.exception("Exception while notifying added users for %s", user_id)
-            
-            # Remove from open_interviews
-            with open_interviews_lock:
-                if user_id in open_interviews:
-                    del open_interviews[user_id]
             
             # Clear reminder state
             with add_two_people_reminded_lock:
