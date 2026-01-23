@@ -5,7 +5,6 @@ import random
 import threading
 import logging
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------------------
 # Configuration / constants
@@ -201,21 +200,6 @@ def open_interview(request_id):
     except Exception:
         logger.exception("Exception opening interview")
 
-def open_interviews_batch(request_ids):
-    """Open multiple interviews concurrently using thread pool."""
-    if not request_ids:
-        return
-    
-    logger.info("Opening %d interviews concurrently", len(request_ids))
-    with ThreadPoolExecutor(max_workers=min(len(request_ids), MAX_WORKERS)) as executor:
-        futures = {executor.submit(open_interview, rid): rid for rid in request_ids}
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception:
-                logger.exception("Exception in batch interview opening")
-    logger.info("Completed opening %d interviews", len(request_ids))
-
 def find_existing_interview_channel(user_id):
     url = "https://discord.com/api/v9/users/@me/channels"
     headers = HEADERS_TEMPLATE.copy()
@@ -244,44 +228,6 @@ def find_existing_interview_channel(user_id):
     except Exception:
         logger.exception("Exception finding interview channel")
         return None
-
-def find_channels_batch(user_ids):
-    """Find interview channels for multiple users by fetching channels once and matching all users."""
-    if not user_ids:
-        return {}
-    
-    url = "https://discord.com/api/v9/users/@me/channels"
-    headers = HEADERS_TEMPLATE.copy()
-    headers.pop("content-type", None)
-    
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        _log_resp_short("find_channels_batch", resp)
-        channels = resp.json() if resp and resp.status_code == 200 else []
-        
-        # Build a mapping of user_id -> channel_id
-        user_to_channel = {}
-        user_ids_str = {str(uid) for uid in user_ids}
-        
-        if isinstance(channels, list):
-            for c in channels:
-                if isinstance(c, dict) and c.get("type") == 3:
-                    recipient_ids = [u.get("id") for u in c.get("recipients", []) if isinstance(u, dict) and "id" in u]
-                    recipient_ids_str = {str(rid) for rid in recipient_ids}
-                    
-                    # Check which of our target users are in this channel
-                    matched_users = user_ids_str.intersection(recipient_ids_str)
-                    for user_id in matched_users:
-                        channel_id = c.get("id")
-                        # Prefer newest channel (highest snowflake ID)
-                        # Safely handle None or empty channel_id values
-                        if channel_id and (user_id not in user_to_channel or int(channel_id) > int(user_to_channel.get(user_id) or '0' or 0)):
-                            user_to_channel[user_id] = channel_id
-        
-        return user_to_channel
-    except Exception:
-        logger.exception("Exception in find_channels_batch")
-        return {}
 
 def get_channel_recipients(channel_id):
     """Get the list of recipient user IDs in a group DM channel. Handles rate limits with retry."""
@@ -444,33 +390,6 @@ def send_interview_message(channel_id, message, mention_user_id=None):
     except Exception:
         logger.exception("Exception sending message")
         return False
-
-def send_messages_batch(messages_to_send):
-    """Send multiple messages concurrently. messages_to_send is a list of (channel_id, message, mention_user_id) tuples."""
-    if not messages_to_send:
-        return {}
-    
-    logger.info("Sending %d messages concurrently", len(messages_to_send))
-    results = {}
-    
-    def send_one(channel_id, message, mention_user_id):
-        success = send_interview_message(channel_id, message, mention_user_id)
-        return (channel_id, success)
-    
-    with ThreadPoolExecutor(max_workers=min(len(messages_to_send), MAX_WORKERS)) as executor:
-        futures = {
-            executor.submit(send_one, channel_id, message, mention_user_id): channel_id 
-            for channel_id, message, mention_user_id in messages_to_send
-        }
-        for future in as_completed(futures):
-            try:
-                channel_id, success = future.result()
-                results[channel_id] = success
-            except Exception:
-                logger.exception("Exception in batch message sending")
-    
-    logger.info("Completed sending %d messages", len(messages_to_send))
-    return results
 
 def notify_added_users(applicant_user_id, channel_id):
     """
