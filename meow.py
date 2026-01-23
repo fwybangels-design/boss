@@ -64,11 +64,11 @@ MAX_POLL_DELAY = 2.0  # Maximum delay balances API load with reasonable retry sp
 BACKOFF_MULTIPLIER = 2.0  # Aggressive backoff for efficient API usage (0.1→0.2→0.4→0.8→1.6→2.0s)
 
 # Monitoring loop configuration  
-MONITOR_POLL_INTERVAL = 1.0  # 1 second provides responsive image detection without excessive API calls
+MONITOR_POLL_INTERVAL = 0.1  # Ultra-fast polling for instant image detection
 CHANNEL_REFRESH_INTERVAL = 10.0  # Check for new channels infrequently since it's a rare edge case
 
 # Concurrent processing configuration
-MAX_WORKERS = 50  # Maximum number of concurrent threads for processing applications
+MAX_WORKERS = 100  # Increased for handling many applications concurrently
 
 # NOTE: Thread Management Strategy
 # - Each active application gets 2 daemon threads (followup + approval monitoring)
@@ -79,9 +79,9 @@ MAX_WORKERS = 50  # Maximum number of concurrent threads for processing applicat
 # - Current design prioritizes responsiveness over resource constraints
 
 # Batch processing timing constants
-CHANNEL_CREATION_DELAY = 0.5  # Delay after opening interviews to allow Discord to create channels
-MAX_CHANNEL_FIND_RETRIES = 5  # Maximum retries for finding newly created channels
-CHANNEL_FIND_RETRY_DELAY = 0.5  # Delay between channel finding retries
+CHANNEL_CREATION_DELAY = 0.2  # Reduced delay after opening interviews to allow Discord to create channels
+MAX_CHANNEL_FIND_RETRIES = 8  # Increased retries with smaller delays for better reliability
+CHANNEL_FIND_RETRY_DELAY = 0.2  # Reduced delay between channel finding retries
 
 # in-memory state only (matches original behavior)
 seen_reqs = set()
@@ -204,7 +204,7 @@ def open_interview(request_id):
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     headers["content-type"] = "application/json"
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES)
+        resp = requests.post(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short(f"open_interview {request_id}", resp)
         logger.info("Opened interview for request %s (status=%s)", request_id, getattr(resp, "status_code", "N/A"))
     except Exception:
@@ -230,7 +230,7 @@ def find_existing_interview_channel(user_id):
     headers = HEADERS_TEMPLATE.copy()
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("find_existing_interview_channel", resp)
         channels = resp.json() if resp and resp.status_code == 200 else []
         matches = []
@@ -264,7 +264,7 @@ def find_channels_batch(user_ids):
     headers.pop("content-type", None)
     
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("find_channels_batch", resp)
         channels = resp.json() if resp and resp.status_code == 200 else []
         
@@ -300,7 +300,7 @@ def get_channel_recipients(channel_id):
     # Remove content-type header for GET requests (not needed and may cause issues)
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("get_channel_recipients", resp)
         if resp and resp.status_code == 200:
             channel_data = resp.json()
@@ -341,7 +341,7 @@ def message_already_sent(channel_id, content_without_mention, mention_user_id=No
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("message_already_sent", resp)
         messages = resp.json() if resp and resp.status_code == 200 else []
         if not isinstance(messages, list):
@@ -376,7 +376,7 @@ def find_own_message_timestamp(channel_id, content_without_mention, mention_user
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("find_own_message_timestamp", resp)
         messages = resp.json() if resp and getattr(resp, "status_code", None) == 200 else []
         if not isinstance(messages, list):
@@ -535,7 +535,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("channel_has_image_from_user", resp)
         if getattr(resp, "status_code", None) == 429:
             try:
