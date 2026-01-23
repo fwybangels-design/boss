@@ -302,24 +302,51 @@ def find_channels_batch(user_ids):
         return {}
 
 def get_channel_recipients(channel_id):
-    """Get the list of recipient user IDs in a group DM channel."""
+    """Get the list of recipient user IDs in a group DM channel. Handles rate limits with retry."""
     url = f"https://discord.com/api/v9/channels/{channel_id}"
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    # Remove content-type header for GET requests (not needed and may cause issues)
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        _log_resp_short("get_channel_recipients", resp)
-        if resp and resp.status_code == 200:
-            channel_data = resp.json()
-            recipients = channel_data.get("recipients", [])
-            recipient_ids = [u.get("id") for u in recipients if isinstance(u, dict) and "id" in u]
-            return recipient_ids
-        return []
-    except Exception:
-        logger.exception("Exception getting channel recipients")
-        return []
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            _log_resp_short("get_channel_recipients", resp)
+            
+            # Handle rate limiting with retry
+            if resp and resp.status_code == 429:
+                try:
+                    data = resp.json()
+                    retry = float(data.get("retry_after", 2))
+                except Exception:
+                    retry = 2.0
+                logger.warning("Rate limited getting recipients for channel %s, retrying in %.1fs (attempt %d/%d)", 
+                              channel_id, retry, attempt + 1, max_retries)
+                time.sleep(retry)
+                continue
+            
+            if resp and resp.status_code == 200:
+                channel_data = resp.json()
+                recipients = channel_data.get("recipients", [])
+                recipient_ids = [u.get("id") for u in recipients if isinstance(u, dict) and "id" in u]
+                return recipient_ids
+            
+            logger.warning("Failed to get recipients from channel %s: status=%s (attempt %d/%d)", 
+                          channel_id, getattr(resp, "status_code", "N/A"), attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+            return []
+            
+        except Exception:
+            logger.exception("Exception getting channel recipients (attempt %d/%d)", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                time.sleep(1.0)
+                continue
+            return []
+    
+    return []
 
 def check_two_people_added(channel_id, applicant_user_id):
     """
@@ -539,41 +566,72 @@ def approve_application(request_id):
 
 
 def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
-    url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
+    """Check if user has sent an image in the channel after min_ts. Handles rate limits with retry."""
+    url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"  # Increased from 50 to 100
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        _log_resp_short("channel_has_image_from_user", resp)
-        if getattr(resp, "status_code", None) == 429:
-            try:
-                data = resp.json()
-                retry = float(data.get("retry_after", 2))
-            except Exception:
-                retry = 2.0
-            time.sleep(retry)
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            _log_resp_short("channel_has_image_from_user", resp)
+            
+            # Handle rate limiting with retry
+            if getattr(resp, "status_code", None) == 429:
+                try:
+                    data = resp.json()
+                    retry = float(data.get("retry_after", 2))
+                except Exception:
+                    retry = 2.0
+                logger.warning("Rate limited checking images in channel %s, retrying in %.1fs (attempt %d/%d)", 
+                              channel_id, retry, attempt + 1, max_retries)
+                time.sleep(retry)
+                continue  # Retry instead of returning False
+            
+            if getattr(resp, "status_code", None) != 200:
+                logger.warning("Failed to fetch messages from channel %s: status=%s (attempt %d/%d)", 
+                              channel_id, getattr(resp, "status_code", "N/A"), attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                return False
+            
+            messages = resp.json()
+            if not isinstance(messages, list):
+                logger.warning("Invalid message format from channel %s (attempt %d/%d)", 
+                              channel_id, attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+                    continue
+                return False
+            
+            # Check messages for images
+            for m in messages:
+                msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
+                if msg_ts < min_ts:
+                    continue
+                if str(m.get("author", {}).get("id")) != str(user_id):
+                    continue
+                attachments = m.get("attachments", []) or []
+                for a in attachments:
+                    content_type = (a.get("content_type") or "").lower()
+                    filename = (a.get("filename") or "").lower()
+                    if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+                        logger.info("✅ Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
+                        return True
             return False
-        messages = resp.json() if getattr(resp, "status_code", None) == 200 else []
-        if not isinstance(messages, list):
+            
+        except Exception:
+            logger.exception("Exception in channel_has_image_from_user (attempt %d/%d)", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                time.sleep(1.0)  # Wait before retry
+                continue
             return False
-        for m in messages:
-            msg_ts = iso_to_epoch(m.get("timestamp") or m.get("edited_timestamp"))
-            if msg_ts < min_ts:
-                continue
-            if str(m.get("author", {}).get("id")) != str(user_id):
-                continue
-            attachments = m.get("attachments", []) or []
-            for a in attachments:
-                content_type = (a.get("content_type") or "").lower()
-                filename = (a.get("filename") or "").lower()
-                if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
-                    logger.info("Found image attachment in channel %s from user %s: %s", channel_id, user_id, filename)
-                    return True
-        return False
-    except Exception:
-        logger.exception("Exception in channel_has_image_from_user")
-        return False
+    
+    # Should not reach here, but return False as fallback
+    return False
 
 # ---------------------------
 # Main behaviors (simple/original-style flow)
