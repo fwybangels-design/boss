@@ -49,7 +49,7 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 0.1  # Check for new applications INSTANTLY (every 100ms) - 10x faster detection
+POLL_INTERVAL = 0.05  # Check for new applications every 50ms (2x faster detection)
 APPROVAL_POLL_INTERVAL = 0.2  # Fast polling for approval checking in single poller thread
 SEND_RETRY_DELAY = 1  # Retry delay for message sending
 MAX_TOTAL_SEND_TIME = 180
@@ -200,7 +200,7 @@ def open_interview(request_id):
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     headers["content-type"] = "application/json"
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, timeout=10)
+        resp = requests.post(url, headers=headers, cookies=COOKIES, timeout=5)
         _log_resp_short(f"open_interview {request_id}", resp)
         logger.info("Opened interview for request %s (status=%s)", request_id, getattr(resp, "status_code", "N/A"))
     except Exception:
@@ -211,7 +211,7 @@ def find_existing_interview_channel(user_id):
     headers = HEADERS_TEMPLATE.copy()
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=5)
         _log_resp_short("find_existing_interview_channel", resp)
         channels = resp.json() if resp and resp.status_code == 200 else []
         matches = []
