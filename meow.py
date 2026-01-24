@@ -20,18 +20,20 @@ _global_rate_limit_lock = asyncio.Lock()
 # ---------------------------
 # Configuration / constants
 # ---------------------------
-# PASTE YOUR DISCORD BOT TOKEN HERE (between the quotes):
+# PASTE YOUR DISCORD USER TOKEN HERE (between the quotes):
 # WARNING: Do NOT commit your token to version control! Keep it secret!
+# NOTE: This bot requires a USER token, not a bot token!
 TOKEN = ""
 
 # If TOKEN is not set above, try loading from environment variable
 if not TOKEN:
     TOKEN = os.environ.get("DISCORD_TOKEN", "")
 
-# Clean up the token: strip whitespace and remove "Bot " prefix if present
-# Discord.py adds "Bot " prefix automatically, so we only want the raw token
+# Clean up the token: strip whitespace and remove "Bot " prefix if accidentally added
+# USER tokens should NEVER have "Bot " prefix - only bot tokens use that
 TOKEN = TOKEN.strip()
 if TOKEN.startswith("Bot "):
+    # Remove "Bot " prefix if user accidentally added it
     TOKEN = TOKEN[4:].strip()
 
 GUILD_ID = "1464067001256509452"
@@ -60,13 +62,12 @@ COOKIES = {
 
 def get_headers():
     """Get headers with current TOKEN value for API requests."""
-    # For Discord REST API calls, bot tokens need "Bot " prefix
-    # User tokens don't need the prefix (start with "mfa.")
-    auth_token = TOKEN if TOKEN.startswith("mfa.") else f"Bot {TOKEN}"
+    # USER tokens should be used directly without "Bot " prefix
+    # Only bot tokens need the "Bot " prefix, but this bot uses USER tokens
     return {
         "accept": "*/*",
         "accept-language": "en-US,en;q=0.9",
-        "authorization": auth_token,
+        "authorization": TOKEN,
         "origin": "https://discord.com",
         "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
         "sec-ch-ua-mobile": "?0",
@@ -972,19 +973,24 @@ async def main():
         logger.error("="*60)
         logger.error("❌ ERROR: Discord TOKEN is not configured!")
         logger.error("="*60)
-        logger.error("Please set your Discord bot token using one of these methods:")
+        logger.error("Please set your Discord USER token using one of these methods:")
         logger.error("  1. Paste your token in the TOKEN variable at the top of meow.py (RECOMMENDED)")
         logger.error("     Find the line: TOKEN = \"\"")
-        logger.error("     Replace it with: TOKEN = \"your_bot_token_here\"")
+        logger.error("     Replace it with: TOKEN = \"your_user_token_here\"")
         logger.error("")
         logger.error("  2. Or set the DISCORD_TOKEN environment variable:")
-        logger.error("     export DISCORD_TOKEN='your_bot_token_here'")
+        logger.error("     export DISCORD_TOKEN='your_user_token_here'")
         logger.error("")
-        logger.error("To get your Discord bot token:")
-        logger.error("  1. Go to https://discord.com/developers/applications")
-        logger.error("  2. Select your application")
-        logger.error("  3. Go to the 'Bot' section")
-        logger.error("  4. Click 'Reset Token' or 'Copy' to get your token")
+        logger.error("IMPORTANT: This bot requires a USER token, not a bot token!")
+        logger.error("To get your Discord USER token:")
+        logger.error("  1. Open Discord in your web browser")
+        logger.error("  2. Press F12 to open Developer Tools")
+        logger.error("  3. Go to the 'Network' tab")
+        logger.error("  4. Type a message in any channel")
+        logger.error("  5. Look for a request and check the 'authorization' header")
+        logger.error("  6. Copy the token value (it should be a long string)")
+        logger.error("")
+        logger.error("WARNING: Never share your user token with anyone!")
         logger.error("="*60)
         session.close()  # Close requests session before exit
         sys.exit(1)
@@ -995,16 +1001,23 @@ async def main():
         logger.error("="*60)
         logger.error("❌ AUTHENTICATION FAILED: Invalid Discord token")
         logger.error("="*60)
-        logger.error("The provided Discord token is invalid or has been revoked.")
+        logger.error("The provided Discord USER token is invalid or has been revoked.")
         logger.error("Error details: %s", str(e))
         logger.error("")
-        logger.error("Please check your token and try again:")
-        logger.error("  1. Go to https://discord.com/developers/applications")
-        logger.error("  2. Select your application")
-        logger.error("  3. Go to the 'Bot' section")
-        logger.error("  4. Click 'Reset Token' to generate a new token")
-        logger.error("  5. Paste the new token in the TOKEN variable at the top of meow.py")
-        logger.error("     Or set it using: export DISCORD_TOKEN='your_new_token'")
+        logger.error("IMPORTANT: This bot requires a USER token, not a bot token!")
+        logger.error("")
+        logger.error("To get your Discord USER token:")
+        logger.error("  1. Open Discord in your web browser (discord.com)")
+        logger.error("  2. Press F12 to open Developer Tools")
+        logger.error("  3. Go to the 'Network' tab")
+        logger.error("  4. Type a message in any channel")
+        logger.error("  5. Find a request (like 'messages') and click it")
+        logger.error("  6. Look at the Request Headers section")
+        logger.error("  7. Find 'authorization' header and copy its value")
+        logger.error("  8. Paste that value in the TOKEN variable at the top of meow.py")
+        logger.error("     Or set it using: export DISCORD_TOKEN='your_user_token'")
+        logger.error("")
+        logger.error("WARNING: Never share your user token with anyone!")
         logger.error("="*60)
         await bot.close()
         session.close()  # Close requests session before exit
