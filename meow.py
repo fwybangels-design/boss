@@ -49,8 +49,8 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 0.05  # Check for new applications ULTRA-FAST (every 50ms) - 2x faster than before
-APPROVAL_POLL_INTERVAL = 0.1  # Ultra-fast polling for approval checking (2x faster)
+POLL_INTERVAL = 0.05  # Check for new applications ULTRA-FAST (every 50ms) - 2x faster detection
+APPROVAL_POLL_INTERVAL = 0.2  # Fast polling for approval checking in single poller thread
 SEND_RETRY_DELAY = 1  # Retry delay for message sending
 MAX_TOTAL_SEND_TIME = 180
 
@@ -63,8 +63,8 @@ FOLLOW_UP_DELAY = 60  # Send follow-up reminder after 60 seconds if no screensho
 
 # Startup handling for servers with MANY applications (300+)
 # These settings prevent "spazzing out" when starting with hundreds of pending apps
-STARTUP_BATCH_SIZE = 10  # Process 10 old applications at a time (doubled for faster startup)
-STARTUP_BATCH_DELAY = 1.0  # Wait 1 second between batches (2x faster than before)
+STARTUP_BATCH_SIZE = 5  # Process 5 old applications at a time (small batches to avoid spam)
+STARTUP_BATCH_DELAY = 2.0  # Wait 2 seconds between batches (allows Discord API to breathe)
 MAX_STARTUP_APPS = 500  # Maximum applications to process at startup (safety limit)
 
 # in-memory state only (matches original behavior)
@@ -137,7 +137,7 @@ def get_pending_applications():
         headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
         
         try:
-            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=5)
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short(f"get_pending_applications (page {page_count + 1})", resp)
             
             # Handle rate limiting with exponential backoff
@@ -183,7 +183,7 @@ def get_pending_applications():
             logger.info("📄 Fetched page %d with %d applications (total so far: %d)", page_count, len(apps), len(all_apps))
             
             # Small delay between pages to avoid rate limiting (only happens on startup for 100+ apps)
-            time.sleep(0.1)
+            time.sleep(0.2)
             
         except Exception:
             logger.exception("Exception fetching pending applications (page %d)", page_count + 1)
@@ -245,7 +245,7 @@ def get_channel_recipients(channel_id):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=5)
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short("get_channel_recipients", resp)
             
             # Handle rate limiting with retry
@@ -269,14 +269,14 @@ def get_channel_recipients(channel_id):
             logger.warning("Failed to get recipients from channel %s: status=%s (attempt %d/%d)", 
                           channel_id, getattr(resp, "status_code", "N/A"), attempt + 1, max_retries)
             if attempt < max_retries - 1:
-                time.sleep(0.2)
+                time.sleep(0.5)
                 continue
             return []
             
         except Exception:
             logger.exception("Exception getting channel recipients (attempt %d/%d)", attempt + 1, max_retries)
             if attempt < max_retries - 1:
-                time.sleep(0.5)
+                time.sleep(1.0)
                 continue
             return []
     
@@ -311,7 +311,7 @@ def message_already_sent(channel_id, content_without_mention, mention_user_id=No
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=5)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("message_already_sent", resp)
         messages = resp.json() if resp and resp.status_code == 200 else []
         if not isinstance(messages, list):
@@ -346,7 +346,7 @@ def find_own_message_timestamp(channel_id, content_without_mention, mention_user
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=5)
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("find_own_message_timestamp", resp)
         messages = resp.json() if resp and getattr(resp, "status_code", None) == 200 else []
         if not isinstance(messages, list):
@@ -385,7 +385,7 @@ def send_interview_message(channel_id, message, mention_user_id=None):
         data["allowed_mentions"] = {"parse": [], "users": [str(mention_user_id)]}
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=5)
+        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"send_interview_message to {channel_id}", resp)
         if getattr(resp, "status_code", None) in (200, 201):
             logger.info("Sent message to channel %s", channel_id)
@@ -442,7 +442,7 @@ def notify_added_users(applicant_user_id, channel_id):
     
     logger.info("🚀 Sending notification message to channel %s", channel_id)
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=5)
+        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"notify_added_users to {channel_id}", resp)
         if getattr(resp, "status_code", None) in (200, 201):
             logger.info("✅ Successfully sent notification to users %s and %s in channel %s", user1, user2, channel_id)
@@ -461,7 +461,7 @@ def approve_application(request_id):
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     data = {"action": "APPROVED"}
     try:
-        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=5)
+        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"approve_application {request_id}", resp)
         if getattr(resp, "status_code", None) == 200:
             logger.info("✅ Approved application %s", request_id)
@@ -482,7 +482,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=5)
+            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short("channel_has_image_from_user", resp)
             
             # Handle rate limiting with retry
@@ -501,7 +501,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
                 logger.warning("Failed to fetch messages from channel %s: status=%s (attempt %d/%d)", 
                               channel_id, getattr(resp, "status_code", "N/A"), attempt + 1, max_retries)
                 if attempt < max_retries - 1:
-                    time.sleep(0.2)  # Brief delay before retry
+                    time.sleep(0.5)  # Brief delay before retry
                     continue
                 return False
             
@@ -510,7 +510,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
                 logger.warning("Invalid message format from channel %s (attempt %d/%d)", 
                               channel_id, attempt + 1, max_retries)
                 if attempt < max_retries - 1:
-                    time.sleep(0.2)
+                    time.sleep(0.5)
                     continue
                 return False
             
@@ -533,7 +533,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
         except Exception:
             logger.exception("Exception in channel_has_image_from_user (attempt %d/%d)", attempt + 1, max_retries)
             if attempt < max_retries - 1:
-                time.sleep(0.5)  # Wait before retry
+                time.sleep(1.0)  # Wait before retry
                 continue
             return False
     
@@ -623,7 +623,7 @@ def process_application(reqid, user_id):
                 followup_composed = f"<@{user_id}>\n{FOLLOW_UP_MESSAGE}"
                 send_interview_message(channel_id, followup_composed, mention_user_id=user_id)
                 follow_up_sent = True
-        time.sleep(0.5)  # Check every 0.5 second - ultra-fast image detection (2x faster)
+        time.sleep(1)  # Check every 1 second - faster than old 2s but not too spammy
 
     logger.info("Finished monitoring reqid=%s user=%s", reqid, user_id)
 
