@@ -21,6 +21,9 @@ _global_rate_limit_lock = asyncio.Lock()
 # Configuration / constants
 # ---------------------------
 # PASTE YOUR DISCORD USER TOKEN HERE (between the quotes):
+# ⚠️  WARNING: This bot uses USER tokens, not bot tokens!
+# ⚠️  Using USER tokens may violate Discord's Terms of Service!
+# ⚠️  USER tokens provide FULL ACCESS to your account - keep them SECRET!
 # WARNING: Do NOT commit your token to version control! Keep it secret!
 # NOTE: This bot requires a USER token, not a bot token!
 TOKEN = ""
@@ -982,15 +985,22 @@ async def main():
         logger.error("     export DISCORD_TOKEN='your_user_token_here'")
         logger.error("")
         logger.error("IMPORTANT: This bot requires a USER token, not a bot token!")
+        logger.error("")
+        logger.error("⚠️  WARNING: Using USER tokens may violate Discord's Terms of Service!")
+        logger.error("⚠️  USER tokens provide full access to your account. Keep them secure!")
+        logger.error("")
         logger.error("To get your Discord USER token:")
-        logger.error("  1. Open Discord in your web browser")
+        logger.error("  1. Open Discord in your web browser (discord.com)")
         logger.error("  2. Press F12 to open Developer Tools")
         logger.error("  3. Go to the 'Network' tab")
         logger.error("  4. Type a message in any channel")
-        logger.error("  5. Look for a request and check the 'authorization' header")
-        logger.error("  6. Copy the token value (it should be a long string)")
+        logger.error("  5. Find a request (like 'messages') and click it")
+        logger.error("  6. Look at the Request Headers section")
+        logger.error("  7. Find 'authorization' header and copy its value")
+        logger.error("  8. Paste that value in the TOKEN variable at the top of meow.py")
+        logger.error("     Or set it using: export DISCORD_TOKEN='your_user_token'")
         logger.error("")
-        logger.error("WARNING: Never share your user token with anyone!")
+        logger.error("⚠️  NEVER share your user token with anyone! It gives full account access!")
         logger.error("="*60)
         session.close()  # Close requests session before exit
         sys.exit(1)
@@ -1006,6 +1016,9 @@ async def main():
         logger.error("")
         logger.error("IMPORTANT: This bot requires a USER token, not a bot token!")
         logger.error("")
+        logger.error("⚠️  WARNING: Using USER tokens may violate Discord's Terms of Service!")
+        logger.error("⚠️  USER tokens provide full access to your account. Keep them secure!")
+        logger.error("")
         logger.error("To get your Discord USER token:")
         logger.error("  1. Open Discord in your web browser (discord.com)")
         logger.error("  2. Press F12 to open Developer Tools")
@@ -1017,7 +1030,7 @@ async def main():
         logger.error("  8. Paste that value in the TOKEN variable at the top of meow.py")
         logger.error("     Or set it using: export DISCORD_TOKEN='your_user_token'")
         logger.error("")
-        logger.error("WARNING: Never share your user token with anyone!")
+        logger.error("⚠️  NEVER share your user token with anyone! It gives full account access!")
         logger.error("="*60)
         await bot.close()
         session.close()  # Close requests session before exit
