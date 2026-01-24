@@ -21,6 +21,7 @@ _global_rate_limit_lock = asyncio.Lock()
 # Configuration / constants
 # ---------------------------
 # PASTE YOUR DISCORD BOT TOKEN HERE (between the quotes):
+# WARNING: Do NOT commit your token to version control! Keep it secret!
 TOKEN = ""
 
 # If TOKEN is not set above, try loading from environment variable

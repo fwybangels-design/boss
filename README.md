@@ -32,8 +32,9 @@ pip install discord.py>=2.0.0 requests>=2.25.0
    - Open `meow.py` in a text editor
    - Find the line near the top: `TOKEN = ""`
    - Paste your Discord bot token between the quotes: `TOKEN = "your_discord_bot_token_here"`
+   - ⚠️ **SECURITY WARNING**: Do NOT commit your token to version control! Keep your token secret and never push it to GitHub or share it publicly.
 
-   **Method 2: Environment variable**
+   **Method 2: Environment variable (More secure for version control)**
    ```bash
    export DISCORD_TOKEN='your_discord_bot_token_here'
    ```
@@ -50,6 +51,14 @@ python meow.py
 3. Go to the 'Bot' section
 4. Click 'Reset Token' or 'Copy' to get your token
 5. Paste the token in the `TOKEN = ""` line at the top of `meow.py`
+
+### Security Best Practices
+
+⚠️ **Important Security Notes:**
+- **Never commit your Discord token to version control!** If you paste your token directly in `meow.py`, be careful not to push that change to GitHub.
+- If you accidentally commit your token, regenerate it immediately in the Discord Developer Portal.
+- For better security when using version control, use the environment variable method instead of direct configuration.
+- Keep your token secret and never share it publicly.
 
 ### Error Messages
 
