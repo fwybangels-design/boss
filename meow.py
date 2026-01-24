@@ -49,7 +49,7 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 0.05  # Check for new applications ULTRA-FAST (every 50ms) - 2x faster detection
+POLL_INTERVAL = 0.05  # Check for new applications every 50ms (2x faster detection)
 APPROVAL_POLL_INTERVAL = 0.2  # Fast polling for approval checking in single poller thread
 SEND_RETRY_DELAY = 1  # Retry delay for message sending
 MAX_TOTAL_SEND_TIME = 180

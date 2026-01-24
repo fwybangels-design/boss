@@ -1,7 +1,7 @@
 # Focused Application Opening Optimizations
 
 ## Summary
-This update optimizes meow.py to detect and open new applications **AS FAST AS POSSIBLE**, focusing only on the critical path from detection to opening.
+This update optimizes meow.py to detect and open new applications faster, focusing only on the critical path from detection to opening.
 
 ## What Was Optimized
 
