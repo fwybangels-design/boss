@@ -34,17 +34,16 @@ if TOKEN.startswith("Bot "):
 GUILD_ID = "1464067001256509452"
 OWN_USER_ID = "1411325023053938730"
 
-# Message content - now includes requirements for 2 people + screenshot
-MESSAGE_CONTENT = ("YOU MUST join the tele network https://t.me/addlist/2tSHTebaXgVhOTRh and it will insta accept you,\n"
-                   "-# SEND A SCREENSHOT OF YOU IN THE [TELEGRAM](https://t.me/addlist/2tSHTebaXgVhOTRh) TO BE ACCEPTED\n"
-                   "-# ALSO ADD 2 PEOPLE TO THIS GROUP DM")
+# Initial message - only asks for screenshot
+MESSAGE_CONTENT = ("YOU MUST join the tele network https://t.me/addlist/cS0b_-rSPsphZDVh and it will insta accept you,\n"
+                   "-# SEND A SCREENSHOT OF YOU IN THE [TELEGRAM](https://t.me/addlist/cS0b_-rSPsphZDVh) TO BE ACCEPTED")
 
 # NEW: special reminder message when a user posts an image but hasn't added 2 people to the group DM yet
 ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add 2 people to this group DM so we can accept you.\n"
                           "-# uploading a screenshot alone isn't enough. If you've already added them, give it a moment to appear.")
 
 # Server invite link to send to the 2 users after approval
-SERVER_INVITE_LINK = "https://discord.gg/xWG3ETgs"
+SERVER_INVITE_LINK = "https://discord.gg/y36kayeu"
 
 COOKIES = {
     # ...your cookies here...
