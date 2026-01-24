@@ -20,8 +20,14 @@ _global_rate_limit_lock = asyncio.Lock()
 # ---------------------------
 # Configuration / constants
 # ---------------------------
-# Try to load TOKEN from environment variable first, fallback to empty string
-TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
+# PASTE YOUR DISCORD BOT TOKEN HERE (between the quotes):
+# WARNING: Do NOT commit your token to version control! Keep it secret!
+TOKEN = ""
+
+# If TOKEN is not set above, try loading from environment variable
+if not TOKEN:
+    TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
+
 GUILD_ID = "1464067001256509452"
 OWN_USER_ID = "1411325023053938730"
 OWN_USER_ID_STR = str(OWN_USER_ID)  # Pre-convert for efficient string comparisons
@@ -958,9 +964,12 @@ async def main():
         logger.error("❌ ERROR: Discord TOKEN is not configured!")
         logger.error("="*60)
         logger.error("Please set your Discord bot token using one of these methods:")
-        logger.error("  1. Set the DISCORD_TOKEN environment variable:")
+        logger.error("  1. Paste your token in the TOKEN variable at the top of meow.py (RECOMMENDED)")
+        logger.error("     Find the line: TOKEN = \"\"")
+        logger.error("     Replace it with: TOKEN = \"your_bot_token_here\"")
+        logger.error("")
+        logger.error("  2. Or set the DISCORD_TOKEN environment variable:")
         logger.error("     export DISCORD_TOKEN='your_bot_token_here'")
-        logger.error("  2. Or modify the TOKEN variable in the script (not recommended)")
         logger.error("")
         logger.error("To get your Discord bot token:")
         logger.error("  1. Go to https://discord.com/developers/applications")
@@ -985,7 +994,8 @@ async def main():
         logger.error("  2. Select your application")
         logger.error("  3. Go to the 'Bot' section")
         logger.error("  4. Click 'Reset Token' to generate a new token")
-        logger.error("  5. Set the new token using: export DISCORD_TOKEN='your_new_token'")
+        logger.error("  5. Paste the new token in the TOKEN variable at the top of meow.py")
+        logger.error("     Or set it using: export DISCORD_TOKEN='your_new_token'")
         logger.error("="*60)
         await bot.close()
         session.close()  # Close requests session before exit

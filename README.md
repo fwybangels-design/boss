@@ -26,12 +26,18 @@ An event-driven Discord bot that automatically processes server join application
 pip install discord.py>=2.0.0 requests>=2.25.0
 ```
 
-2. Configure the bot token using environment variable (recommended):
-```bash
-export DISCORD_TOKEN='your_discord_bot_token_here'
-```
+2. Configure the bot token (choose one method):
 
-Alternatively, you can modify the TOKEN variable in the script (not recommended for security).
+   **Method 1: Direct configuration (RECOMMENDED - Simple copy & paste)**
+   - Open `meow.py` in a text editor
+   - Find the line near the top: `TOKEN = ""`
+   - Paste your Discord bot token between the quotes: `TOKEN = "your_discord_bot_token_here"`
+   - ⚠️ **SECURITY WARNING**: Do NOT commit your token to version control! Keep your token secret and never push it to GitHub or share it publicly.
+
+   **Method 2: Environment variable (More secure for version control)**
+   ```bash
+   export DISCORD_TOKEN='your_discord_bot_token_here'
+   ```
 
 3. Run the bot:
 ```bash
@@ -44,7 +50,15 @@ python meow.py
 2. Select your application (or create a new one)
 3. Go to the 'Bot' section
 4. Click 'Reset Token' or 'Copy' to get your token
-5. Set the token using: `export DISCORD_TOKEN='your_token_here'`
+5. Paste the token in the `TOKEN = ""` line at the top of `meow.py`
+
+### Security Best Practices
+
+⚠️ **Important Security Notes:**
+- **Never commit your Discord token to version control!** If you paste your token directly in `meow.py`, be careful not to push that change to GitHub.
+- If you accidentally commit your token, regenerate it immediately in the Discord Developer Portal.
+- For better security when using version control, use the environment variable method instead of direct configuration.
+- Keep your token secret and never share it publicly.
 
 ### Error Messages
 
@@ -57,9 +71,12 @@ The bot will now provide clear error messages with instructions on how to fix th
 ```
 ❌ ERROR: Discord TOKEN is not configured!
 Please set your Discord bot token using one of these methods:
-  1. Set the DISCORD_TOKEN environment variable:
+  1. Paste your token in the TOKEN variable at the top of meow.py (RECOMMENDED)
+     Find the line: TOKEN = ""
+     Replace it with: TOKEN = "your_bot_token_here"
+
+  2. Or set the DISCORD_TOKEN environment variable:
      export DISCORD_TOKEN='your_bot_token_here'
-  2. Or modify the TOKEN variable in the script (not recommended)
 ```
 
 ## nox.py - DM Bot with Token Rotation
