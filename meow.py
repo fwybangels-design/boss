@@ -103,7 +103,7 @@ intents.dm_messages = True
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents, self_bot=True)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Helpers
 def make_nonce():
@@ -851,7 +851,7 @@ async def on_ready():
 async def on_message(message):
     """Detect when a photo is sent in an interview channel - INSTANT detection."""
     # Ignore messages from the bot itself
-    if message.author.id == bot.user.id:
+    if str(message.author.id) == OWN_USER_ID_STR:
         return
     
     # Check if this is a group DM (type 3)
@@ -893,38 +893,25 @@ async def on_message(message):
         await check_and_approve_if_ready(message.author.id)
 
 @bot.event
-async def on_group_join(channel, user):
-    """Detect when people are added to group DM - INSTANT detection."""
-    channel_id = str(channel.id)
-    
-    # Check if any user in our open_interviews is in this channel
-    for user_id_str, info in list(open_interviews.items()):
-        if info.get("channel_id") == channel_id:
-            # Someone was added to an interview channel
-            logger.info("⚡ INSTANT: User added to channel %s (applicant=%s)", channel_id, user_id_str)
-            
-            # Check if ready to approve
-            await check_and_approve_if_ready(int(user_id_str))
-            break
-
-@bot.event
 async def on_private_channel_update(before, after):
-    """Detect when group DM recipients change (backup for on_group_join)."""
+    """Detect when group DM recipients change - INSTANT detection of member additions."""
     if not isinstance(after, discord.GroupChannel):
         return
     
-    # Check if recipients changed
-    before_recipients = set(str(u.id) for u in before.recipients) if hasattr(before, 'recipients') else set()
+    # Check if recipients changed (handle case where before is None)
+    before_recipients = set(str(u.id) for u in before.recipients) if before and hasattr(before, 'recipients') else set()
     after_recipients = set(str(u.id) for u in after.recipients) if hasattr(after, 'recipients') else set()
     
     if before_recipients != after_recipients:
         channel_id = str(after.id)
-        logger.info("⚡ Recipients changed in channel %s", channel_id)
+        added_users = after_recipients - before_recipients
+        if added_users:
+            logger.info("⚡ INSTANT: User(s) added to channel %s: %s", channel_id, added_users)
         
         # Check if any user in our open_interviews is in this channel
         for user_id_str, info in list(open_interviews.items()):
             if info.get("channel_id") == channel_id:
-                logger.info("⚡ INSTANT: Recipients changed for applicant %s", user_id_str)
+                logger.info("⚡ Checking approval readiness for applicant %s after recipient change", user_id_str)
                 await check_and_approve_if_ready(int(user_id_str))
                 break
 
