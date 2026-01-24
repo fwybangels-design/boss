@@ -6,6 +6,13 @@ import threading
 import logging
 from datetime import datetime, timezone
 
+# Global session for connection pooling (reuse connections to avoid rate limits)
+session = requests.Session()
+
+# Global rate limit tracker
+_global_rate_limit_until = 0.0
+_global_rate_limit_lock = threading.Lock()
+
 # ---------------------------
 # Configuration / constants
 # ---------------------------
@@ -49,14 +56,15 @@ HEADERS_TEMPLATE = {
     "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
 }
 
-POLL_INTERVAL = 0.05  # Check for new applications every 50ms (2x faster detection)
-APPROVAL_POLL_INTERVAL = 0.2  # Fast polling for approval checking in single poller thread
+POLL_INTERVAL = 1.0  # Check for new applications every 1 second (reduced from 50ms to avoid rate limits)
+APPROVAL_POLL_INTERVAL = 2.0  # Slower polling for approval checking to reduce API calls (was 0.2s)
+APPROVAL_CHECK_STAGGER = 0.3  # Delay between checking different users in approval poller
 SEND_RETRY_DELAY = 1  # Retry delay for message sending
 MAX_TOTAL_SEND_TIME = 180
 
-# Channel finding configuration - OPTIMIZED FOR INSTANT OPENING
-CHANNEL_FIND_POLL_DELAY = 0.05  # Poll every 50ms for INSTANT channel detection (was 0.5s)
-CHANNEL_FIND_TIMEOUT = 30  # Reduced timeout since we're checking frequently
+# Channel finding configuration
+CHANNEL_FIND_POLL_DELAY = 0.5  # Poll every 500ms for channel detection (reduced from 50ms)
+CHANNEL_FIND_TIMEOUT = 30  # Timeout for finding channel
 
 # Follow-up message timing
 FOLLOW_UP_DELAY = 60  # Send follow-up reminder after 60 seconds if no screenshot uploaded
@@ -88,6 +96,23 @@ logger.addHandler(ch)
 # Helpers
 def make_nonce():
     return str(random.randint(10**17, 10**18 - 1))
+
+def check_global_rate_limit():
+    """Check if we're globally rate limited and sleep if needed."""
+    global _global_rate_limit_until
+    with _global_rate_limit_lock:
+        now = time.time()
+        if now < _global_rate_limit_until:
+            wait_time = _global_rate_limit_until - now
+            logger.warning("Global rate limit active, waiting %.1fs", wait_time)
+            time.sleep(wait_time)
+
+def set_global_rate_limit(retry_after):
+    """Set global rate limit based on retry_after seconds."""
+    global _global_rate_limit_until
+    with _global_rate_limit_lock:
+        _global_rate_limit_until = time.time() + retry_after
+        logger.warning("Set global rate limit for %.1fs", retry_after)
 
 def iso_to_epoch(ts_str):
     if not ts_str:
@@ -123,6 +148,8 @@ def get_pending_applications():
     Fetch all pending applications from Discord API with pagination.
     Handles rate limiting with exponential backoff.
     """
+    check_global_rate_limit()  # Respect global rate limit
+    
     all_apps = []
     after = None
     page_count = 0
@@ -137,7 +164,7 @@ def get_pending_applications():
         headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
         
         try:
-            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            resp = session.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short(f"get_pending_applications (page {page_count + 1})", resp)
             
             # Handle rate limiting with exponential backoff
@@ -147,7 +174,8 @@ def get_pending_applications():
                     retry_after = float(data.get("retry_after", 5))
                 except Exception:
                     retry_after = 5.0
-                logger.warning("⚠️ Rate limited fetching applications page %d, waiting %.1fs before retry", 
+                set_global_rate_limit(retry_after)  # Set global rate limit
+                logger.warning("Rate limited fetching applications page %d, waiting %.1fs before retry", 
                               page_count + 1, retry_after)
                 time.sleep(retry_after)
                 continue  # Retry this page
@@ -182,8 +210,8 @@ def get_pending_applications():
             
             logger.info("📄 Fetched page %d with %d applications (total so far: %d)", page_count, len(apps), len(all_apps))
             
-            # Small delay between pages to avoid rate limiting (only happens on startup for 100+ apps)
-            time.sleep(0.2)
+            # Delay between pages to avoid rate limiting
+            time.sleep(0.5)  # Increased from 0.2s to reduce rate limit risk
             
         except Exception:
             logger.exception("Exception fetching pending applications (page %d)", page_count + 1)
@@ -195,24 +223,40 @@ def get_pending_applications():
     return all_apps
 
 def open_interview(request_id):
+    check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/join-requests/{request_id}/interview"
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     headers["content-type"] = "application/json"
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, timeout=5)
+        resp = session.post(url, headers=headers, cookies=COOKIES, timeout=5)
         _log_resp_short(f"open_interview {request_id}", resp)
+        if resp and resp.status_code == 429:
+            try:
+                data = resp.json()
+                retry_after = float(data.get("retry_after", 2))
+                set_global_rate_limit(retry_after)
+            except Exception:
+                pass
         logger.info("Opened interview for request %s (status=%s)", request_id, getattr(resp, "status_code", "N/A"))
     except Exception:
         logger.exception("Exception opening interview")
 
 def find_existing_interview_channel(user_id):
+    check_global_rate_limit()  # Respect global rate limit
     url = "https://discord.com/api/v9/users/@me/channels"
     headers = HEADERS_TEMPLATE.copy()
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=5)
+        resp = session.get(url, headers=headers, cookies=COOKIES, timeout=5)
         _log_resp_short("find_existing_interview_channel", resp)
+        if resp and resp.status_code == 429:
+            try:
+                data = resp.json()
+                retry_after = float(data.get("retry_after", 2))
+                set_global_rate_limit(retry_after)
+            except Exception:
+                pass
         channels = resp.json() if resp and resp.status_code == 200 else []
         matches = []
         if isinstance(channels, list):
@@ -237,6 +281,7 @@ def find_existing_interview_channel(user_id):
 
 def get_channel_recipients(channel_id):
     """Get the list of recipient user IDs in a group DM channel. Handles rate limits with retry."""
+    check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}"
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
@@ -245,7 +290,7 @@ def get_channel_recipients(channel_id):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            resp = session.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short("get_channel_recipients", resp)
             
             # Handle rate limiting with retry
@@ -255,6 +300,7 @@ def get_channel_recipients(channel_id):
                     retry = float(data.get("retry_after", 2))
                 except Exception:
                     retry = 2.0
+                set_global_rate_limit(retry)  # Set global rate limit
                 logger.warning("Rate limited getting recipients for channel %s, retrying in %.1fs (attempt %d/%d)", 
                               channel_id, retry, attempt + 1, max_retries)
                 time.sleep(retry)
@@ -306,13 +352,21 @@ def check_two_people_added(channel_id, applicant_user_id):
 
 
 def message_already_sent(channel_id, content_without_mention, mention_user_id=None, min_ts=0.0):
+    check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+        resp = session.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("message_already_sent", resp)
+        if resp and resp.status_code == 429:
+            try:
+                data = resp.json()
+                retry_after = float(data.get("retry_after", 2))
+                set_global_rate_limit(retry_after)
+            except Exception:
+                pass
         messages = resp.json() if resp and resp.status_code == 200 else []
         if not isinstance(messages, list):
             return False
@@ -341,13 +395,21 @@ def find_own_message_timestamp(channel_id, content_without_mention, mention_user
     authored by OWN_USER_ID that contains content_without_mention and (if provided)
     mentions mention_user_id. Returns 0.0 if not found.
     """
+    check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+        resp = session.get(url, headers=headers, cookies=COOKIES, timeout=10)
         _log_resp_short("find_own_message_timestamp", resp)
+        if resp and resp.status_code == 429:
+            try:
+                data = resp.json()
+                retry_after = float(data.get("retry_after", 2))
+                set_global_rate_limit(retry_after)
+            except Exception:
+                pass
         messages = resp.json() if resp and getattr(resp, "status_code", None) == 200 else []
         if not isinstance(messages, list):
             return 0.0
@@ -372,6 +434,7 @@ def find_own_message_timestamp(channel_id, content_without_mention, mention_user
         return 0.0
 
 def send_interview_message(channel_id, message, mention_user_id=None):
+    check_global_rate_limit()  # Respect global rate limit
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers["content-type"] = "application/json"
@@ -385,8 +448,15 @@ def send_interview_message(channel_id, message, mention_user_id=None):
         data["allowed_mentions"] = {"parse": [], "users": [str(mention_user_id)]}
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
+        resp = session.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"send_interview_message to {channel_id}", resp)
+        if resp and resp.status_code == 429:
+            try:
+                data = resp.json()
+                retry_after = float(data.get("retry_after", 2))
+                set_global_rate_limit(retry_after)
+            except Exception:
+                pass
         if getattr(resp, "status_code", None) in (200, 201):
             logger.info("Sent message to channel %s", channel_id)
             return True
@@ -442,8 +512,16 @@ def notify_added_users(applicant_user_id, channel_id):
     
     logger.info("🚀 Sending notification message to channel %s", channel_id)
     try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
+        check_global_rate_limit()  # Respect global rate limit
+        resp = session.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"notify_added_users to {channel_id}", resp)
+        if resp and resp.status_code == 429:
+            try:
+                retry_data = resp.json()
+                retry_after = float(retry_data.get("retry_after", 2))
+                set_global_rate_limit(retry_after)
+            except Exception:
+                pass
         if getattr(resp, "status_code", None) in (200, 201):
             logger.info("✅ Successfully sent notification to users %s and %s in channel %s", user1, user2, channel_id)
         else:
@@ -455,14 +533,22 @@ def notify_added_users(applicant_user_id, channel_id):
 
 
 def approve_application(request_id):
+    check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests/id/{request_id}"
     headers = HEADERS_TEMPLATE.copy()
     headers["content-type"] = "application/json"
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     data = {"action": "APPROVED"}
     try:
-        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
+        resp = session.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         _log_resp_short(f"approve_application {request_id}", resp)
+        if resp and resp.status_code == 429:
+            try:
+                retry_data = resp.json()
+                retry_after = float(retry_data.get("retry_after", 2))
+                set_global_rate_limit(retry_after)
+            except Exception:
+                pass
         if getattr(resp, "status_code", None) == 200:
             logger.info("✅ Approved application %s", request_id)
         else:
@@ -474,6 +560,7 @@ def approve_application(request_id):
 
 def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     """Check if user has sent an image in the channel after min_ts. Handles rate limits with retry."""
+    check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"  # Increased from 50 to 100
     headers = HEADERS_TEMPLATE.copy()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
@@ -482,7 +569,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+            resp = session.get(url, headers=headers, cookies=COOKIES, timeout=10)
             _log_resp_short("channel_has_image_from_user", resp)
             
             # Handle rate limiting with retry
@@ -492,6 +579,7 @@ def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
                     retry = float(data.get("retry_after", 2))
                 except Exception:
                     retry = 2.0
+                set_global_rate_limit(retry)  # Set global rate limit
                 logger.warning("Rate limited checking images in channel %s, retrying in %.1fs (attempt %d/%d)", 
                               channel_id, retry, attempt + 1, max_retries)
                 time.sleep(retry)
@@ -632,6 +720,7 @@ def approval_poller():
     Single poller thread that checks all users for approval conditions.
     This replaces the per-user approval threads for better efficiency.
     Similar to the old friend_request_poller architecture but checks for 2 people + image.
+    Adds staggering between user checks to avoid rate limiting bursts.
     """
     logger.info("Started approval poller thread.")
     while True:
@@ -643,13 +732,17 @@ def approval_poller():
 
         with open_interviews_lock:
             to_remove = []
-            for user_id in keys:
+            for i, user_id in enumerate(keys):
                 info = open_interviews.get(user_id, {})
                 reqid = info.get("reqid")
                 channel_id = info.get("channel_id")
                 opened_at = info.get("opened_at", 0.0)
                 if not reqid or not channel_id:
                     continue
+                
+                # Add stagger delay between checking different users to avoid bursts
+                if i > 0:
+                    time.sleep(APPROVAL_CHECK_STAGGER)
                 
                 has_two_people, added_users = check_two_people_added(channel_id, user_id)
                 has_image = channel_has_image_from_user(channel_id, user_id, min_ts=opened_at)
