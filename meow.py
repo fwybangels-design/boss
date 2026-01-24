@@ -39,6 +39,10 @@ MESSAGE_CONTENT = ("YOU MUST join the tele network https://t.me/addlist/2tSHTeba
                    "-# SEND A SCREENSHOT OF YOU IN THE [TELEGRAM](https://t.me/addlist/2tSHTebaXgVhOTRh) TO BE ACCEPTED\n"
                    "-# ALSO ADD 2 PEOPLE TO THIS GROUP DM")
 
+# NEW: special reminder message when a user posts an image but hasn't added 2 people to the group DM yet
+ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add 2 people to this group DM so we can accept you.\n"
+                          "-# uploading a screenshot alone isn't enough. If you've already added them, give it a moment to appear.")
+
 # Server invite link to send to the 2 users after approval
 SERVER_INVITE_LINK = "https://discord.gg/xWG3ETgs"
 
@@ -74,6 +78,9 @@ seen_reqs = set()
 open_interviews = {}
 open_interviews_lock = threading.Lock()
 
+# Track which users we've sent the "add 2 people" reminder to
+add_two_people_reminded = set()
+
 def make_nonce():
     return str(random.randint(10**17, 10**18-1))
 
@@ -91,7 +98,7 @@ def get_pending_applications():
             return []
         return resp.json().get("guild_join_requests", [])
     except Exception as e:
-        logger.error(f"[!] Could not fetch pending applications: {e}")
+        logger.error(f"Could not fetch applications: {e}")
         return []
 
 def open_interview(request_id):
@@ -102,12 +109,11 @@ def open_interview(request_id):
     headers["content-type"] = "application/json"
     try:
         resp = requests.post(url, headers=headers, cookies=COOKIES, timeout=10)
-        logger.info(f"[*] Opened interview for {request_id} (status: {resp.status_code})")
         if resp.status_code == 429:
             retry_after = resp.json().get("retry_after", 2)
             time.sleep(retry_after)
     except Exception as e:
-        logger.error(f"[!] Exception opening interview: {e}")
+        logger.error(f"Error opening interview: {e}")
 
 def find_existing_interview_channel(user_id):
     """Find the group DM channel for a user."""
@@ -122,7 +128,6 @@ def find_existing_interview_channel(user_id):
             return None
         channels = resp.json()
         if not isinstance(channels, list):
-            logger.warning(f"[!] Unexpected channels response: {channels}")
             return None
         for c in channels:
             if isinstance(c, dict) and c.get("type") == 3:
@@ -130,7 +135,7 @@ def find_existing_interview_channel(user_id):
                 if str(user_id) in [str(r) for r in recipient_ids]:
                     return c["id"]
     except Exception as e:
-        logger.error(f"[!] Exception finding interview channel: {e}")
+        logger.error(f"Error finding channel: {e}")
     return None
 
 def message_already_sent(channel_id, content):
@@ -167,20 +172,19 @@ def send_interview_message(channel_id, message):
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
     try:
         resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
-        logger.info(f"[MSG] POST to {url} status: {resp.status_code}")
         if resp.status_code == 200 or resp.status_code == 201:
-            logger.info(f"[*] Sent message in {channel_id}")
+            logger.info(f"Sent message to channel {channel_id}")
             return True
         elif resp.status_code == 429:
             retry_after = resp.json().get("retry_after", 10)
-            logger.warning(f"[!] Rate limited! Waiting {retry_after}s")
+            logger.warning(f"Rate limited! Waiting {retry_after}s")
             time.sleep(retry_after)
         elif resp.status_code == 404:
-            logger.warning("[!] Channel not found yet (404), waiting before retry...")
+            logger.warning("Channel not found yet (404)")
         else:
-            logger.warning(f"[!] Failed to send message. Status: {resp.status_code} | {resp.text[:200]}")
+            logger.warning(f"Failed to send message. Status: {resp.status_code}")
     except Exception as e:
-        logger.error(f"[!] Exception sending message: {e}")
+        logger.error(f"Exception sending message: {e}")
     return False
 
 def get_channel_recipients(channel_id):
@@ -240,14 +244,14 @@ def approve_application(request_id):
     try:
         resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         if resp.status_code == 200:
-            logger.info(f"[*] ✅ Approved application {request_id}")
+            logger.info(f"✅ Approved application {request_id}")
         else:
-            logger.warning(f"[!] Failed to approve application {request_id}. Status: {resp.status_code} | {resp.text[:200]}")
+            logger.warning(f"Failed to approve. Status: {resp.status_code}")
         if resp.status_code == 429:
             retry_after = resp.json().get("retry_after", 2)
             time.sleep(retry_after)
     except Exception as e:
-        logger.error(f"[!] Exception approving application: {e}")
+        logger.error(f"Exception approving application: {e}")
 
 def notify_added_users(channel_id, added_users):
     """Send notification to the 2 users who were added."""
@@ -274,15 +278,15 @@ def notify_added_users(channel_id, added_users):
     try:
         resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
         if resp.status_code in (200, 201):
-            logger.info(f"[*] ✅ Sent notification to users {user1} and {user2}")
+            logger.info(f"✅ Notified users {user1} and {user2} to join server")
         else:
-            logger.warning(f"[!] Failed to notify users. Status: {resp.status_code}")
+            logger.warning(f"Failed to notify users. Status: {resp.status_code}")
     except Exception as e:
-        logger.error(f"[!] Exception notifying users: {e}")
+        logger.error(f"Exception notifying users: {e}")
 
 def process_application(reqid, user_id):
     """Process a single application."""
-    logger.info(f"[THREAD] Starting processing for reqid={reqid}, user={user_id}")
+    logger.info(f"Processing application: reqid={reqid}, user={user_id}")
     
     # Step 1: Open interview
     open_interview(reqid)
@@ -297,15 +301,15 @@ def process_application(reqid, user_id):
         time.sleep(1)
     
     if not channel_id:
-        logger.warning(f"[THREAD] Could not find group DM for reqid={reqid}")
+        logger.warning(f"Could not find channel for reqid={reqid}")
         return
     
-    logger.info(f"[THREAD] Found channel {channel_id} for reqid={reqid}")
+    logger.info(f"Found channel {channel_id} for reqid={reqid}")
     
     # Step 3: Send message (if not already sent)
     sent = False
     if message_already_sent(channel_id, MESSAGE_CONTENT):
-        logger.info(f"[THREAD] Message already present in {channel_id}. Skipping send.")
+        logger.info(f"Message already sent in {channel_id}")
         sent = True
     else:
         start_send = time.time()
@@ -315,18 +319,18 @@ def process_application(reqid, user_id):
                 time.sleep(SEND_RETRY_DELAY)
     
     if not sent:
-        logger.warning(f"[THREAD] Giving up sending in {channel_id} after retries.")
+        logger.warning(f"Failed to send message in {channel_id}")
         return
     
     # Step 4: Register for monitoring
     with open_interviews_lock:
         open_interviews[str(user_id)] = {"reqid": reqid, "channel_id": channel_id}
     
-    logger.info(f"[THREAD] Registered reqid={reqid} for user={user_id} (channel={channel_id})")
+    logger.info(f"Monitoring user={user_id} for approval conditions")
 
 def approval_monitor():
     """Monitor open interviews and approve when conditions are met."""
-    logger.info("[MONITOR] Started approval monitor thread")
+    print("Monitor thread started")
     
     while True:
         with open_interviews_lock:
@@ -336,7 +340,7 @@ def approval_monitor():
             with open_interviews_lock:
                 if user_id not in open_interviews:
                     continue
-                info = open_interviews[user_id]
+                info = open_interviews[user_id].copy()  # Copy to avoid holding lock during API calls
             
             reqid = info.get("reqid")
             channel_id = info.get("channel_id")
@@ -345,14 +349,25 @@ def approval_monitor():
                 continue
             
             # Check both conditions
-            has_two_people, added_users = check_two_people_added(channel_id, user_id)
-            has_image = channel_has_image(channel_id, user_id)
+            try:
+                has_two_people, added_users = check_two_people_added(channel_id, user_id)
+                has_image = channel_has_image(channel_id, user_id)
+            except Exception as e:
+                logger.error(f"Error checking user {user_id}: {e}")
+                continue
             
-            logger.info(f"[MONITOR] Checking user={user_id}: has_two_people={has_two_people}, has_image={has_image}")
+            # If image present but not 2 people added, send the "add 2 people" reminder once
+            if has_image and not has_two_people:
+                if str(user_id) not in add_two_people_reminded:
+                    logger.info(f"Sending 'add 2 people' reminder to user {user_id}")
+                    reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
+                    if send_interview_message(channel_id, reminder):
+                        add_two_people_reminded.add(str(user_id))
+                        logger.info(f"Sent 'add 2 people' reminder to user {user_id}")
             
             # Approve if both conditions are met
             if has_two_people and has_image:
-                logger.info(f"[MONITOR] 🎉 APPROVING reqid={reqid} for user={user_id} (both conditions met)")
+                logger.info(f"APPROVING user={user_id} (has 2 people + screenshot)")
                 approve_application(reqid)
                 
                 # Notify the 2 added users
@@ -363,53 +378,51 @@ def approval_monitor():
                 with open_interviews_lock:
                     if user_id in open_interviews:
                         del open_interviews[user_id]
+                # Clear reminder state
+                add_two_people_reminded.discard(str(user_id))
         
         time.sleep(2)  # Check every 2 seconds
 
 def main():
     """Main entry point."""
     if not TOKEN:
-        logger.error("="*60)
-        logger.error("❌ ERROR: Discord TOKEN is not configured!")
-        logger.error("="*60)
-        logger.error("Please set your Discord USER token using one of these methods:")
-        logger.error("  1. Paste your token in the TOKEN variable at the top of this file")
-        logger.error("  2. Or set the DISCORD_TOKEN environment variable")
-        logger.error("")
-        logger.error("IMPORTANT: This bot requires a USER token, not a bot token!")
-        logger.error("⚠️  WARNING: Using USER tokens may violate Discord's Terms of Service!")
-        logger.error("="*60)
+        print("="*60)
+        print("ERROR: Discord TOKEN is not configured!")
+        print("Please set your Discord USER token in the TOKEN variable")
+        print("="*60)
         return
     
-    logger.info("="*60)
-    logger.info("🚀 Starting Discord Application Automation")
-    logger.info("="*60)
+    print("="*60)
+    print("Discord Application Bot Started")
+    print("="*60)
     
     # Start approval monitor thread
     monitor_thread = threading.Thread(target=approval_monitor, daemon=True)
     monitor_thread.start()
     
     # Main loop - poll for new applications
-    logger.info("[MAIN] Starting application polling loop...")
+    print("Polling for applications...")
     while True:
         try:
             apps = get_pending_applications()
             for app in apps:
-                reqid = app["id"]
-                user_id = app["user_id"]
+                reqid = app.get("id")
+                user_id = app.get("user_id")
+                if not reqid or not user_id:
+                    continue
                 if reqid not in seen_reqs:
                     seen_reqs.add(reqid)
-                    logger.info(f"[MAIN] New application: reqid={reqid}, user={user_id}")
+                    logger.info(f"NEW APPLICATION: reqid={reqid}, user={user_id}")
                     # Process in a separate thread
                     thread = threading.Thread(target=process_application, args=(reqid, user_id))
                     thread.start()
             
             time.sleep(POLL_INTERVAL)
         except KeyboardInterrupt:
-            logger.info("\n[MAIN] Shutting down...")
+            print("\nShutting down...")
             break
         except Exception as e:
-            logger.exception(f"[MAIN] Exception in main loop: {e}")
+            logger.error(f"Error in main loop: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
