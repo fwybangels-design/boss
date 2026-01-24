@@ -6,6 +6,8 @@ import time
 import random
 import asyncio
 import logging
+import os
+import sys
 from datetime import datetime, timezone
 
 # Global session for connection pooling (for hybrid REST calls where we still need them)
@@ -18,7 +20,8 @@ _global_rate_limit_lock = asyncio.Lock()
 # ---------------------------
 # Configuration / constants
 # ---------------------------
-TOKEN = ""
+# Try to load TOKEN from environment variable first, fallback to empty string
+TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 GUILD_ID = "1464067001256509452"
 OWN_USER_ID = "1411325023053938730"
 OWN_USER_ID_STR = str(OWN_USER_ID)  # Pre-convert for efficient string comparisons
@@ -947,11 +950,57 @@ async def main():
     logger.info("🚀 Starting meow.py - EVENT-DRIVEN ARCHITECTURE")
     logger.info("="*60)
     
+    # Validate TOKEN before starting
+    if not TOKEN or TOKEN == "":
+        logger.error("="*60)
+        logger.error("❌ ERROR: Discord TOKEN is not configured!")
+        logger.error("="*60)
+        logger.error("Please set your Discord bot token using one of these methods:")
+        logger.error("  1. Set the DISCORD_TOKEN environment variable:")
+        logger.error("     export DISCORD_TOKEN='your_bot_token_here'")
+        logger.error("  2. Or modify the TOKEN variable in the script (not recommended)")
+        logger.error("")
+        logger.error("To get your Discord bot token:")
+        logger.error("  1. Go to https://discord.com/developers/applications")
+        logger.error("  2. Select your application")
+        logger.error("  3. Go to the 'Bot' section")
+        logger.error("  4. Click 'Reset Token' or 'Copy' to get your token")
+        logger.error("="*60)
+        session.close()  # Close requests session before exit
+        sys.exit(1)
+    
     try:
         await bot.start(TOKEN)
+    except discord.errors.LoginFailure as e:
+        logger.error("="*60)
+        logger.error("❌ AUTHENTICATION FAILED: Invalid Discord token")
+        logger.error("="*60)
+        logger.error("The provided Discord token is invalid or has been revoked.")
+        logger.error("Error details: %s", str(e))
+        logger.error("")
+        logger.error("Please check your token and try again:")
+        logger.error("  1. Go to https://discord.com/developers/applications")
+        logger.error("  2. Select your application")
+        logger.error("  3. Go to the 'Bot' section")
+        logger.error("  4. Click 'Reset Token' to generate a new token")
+        logger.error("  5. Set the new token using: export DISCORD_TOKEN='your_new_token'")
+        logger.error("="*60)
+        await bot.close()
+        session.close()  # Close requests session before exit
+        sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         await bot.close()
+        session.close()  # Close requests session before exit
+    except Exception as e:
+        logger.error("="*60)
+        logger.error("❌ UNEXPECTED ERROR occurred during bot startup")
+        logger.error("="*60)
+        logger.exception("Error details: %s", str(e))
+        logger.error("="*60)
+        await bot.close()
+        session.close()  # Close requests session before exit
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
