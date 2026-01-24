@@ -26,7 +26,13 @@ TOKEN = ""
 
 # If TOKEN is not set above, try loading from environment variable
 if not TOKEN:
-    TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
+    TOKEN = os.environ.get("DISCORD_TOKEN", "")
+
+# Clean up the token: strip whitespace and remove "Bot " prefix if present
+# Discord.py adds "Bot " prefix automatically, so we only want the raw token
+TOKEN = TOKEN.strip()
+if TOKEN.startswith("Bot "):
+    TOKEN = TOKEN[4:].strip()
 
 GUILD_ID = "1464067001256509452"
 OWN_USER_ID = "1411325023053938730"
@@ -54,10 +60,13 @@ COOKIES = {
 
 def get_headers():
     """Get headers with current TOKEN value for API requests."""
+    # For Discord REST API calls, bot tokens need "Bot " prefix
+    # User tokens don't need the prefix (start with "mfa.")
+    auth_token = TOKEN if TOKEN.startswith("mfa.") else f"Bot {TOKEN}"
     return {
         "accept": "*/*",
         "accept-language": "en-US,en;q=0.9",
-        "authorization": TOKEN,
+        "authorization": auth_token,
         "origin": "https://discord.com",
         "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
         "sec-ch-ua-mobile": "?0",
