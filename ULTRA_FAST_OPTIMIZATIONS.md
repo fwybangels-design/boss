@@ -268,21 +268,61 @@ Look for these in logs to verify performance:
 ## Safety Considerations
 
 ### Rate Limiting
-- Faster polling may hit rate limits sooner
-- Monitor Discord API responses for 429 errors
-- If rate limited frequently, can increase intervals slightly
+- **⚠️ IMPORTANT:** Faster polling (50ms/100ms) may hit rate limits sooner than before
+- Monitor Discord API responses for 429 errors in production
+- The code already handles 429 responses with dynamic backoff
+- If rate limited frequently, consider increasing intervals to 75ms/150ms
+- Current settings are optimized for maximum speed - adjust if stability is more important
+
+### HTTP Timeouts
+- **⚠️ TRADE-OFF:** Reduced timeouts (5s) may cause legitimate slow responses to fail
+- During high Discord API latency (e.g., 4-6s response time), some requests may timeout prematurely
+- The retry logic will handle these cases, but with additional overhead
+- Consider monitoring timeout failures and increasing to 7-8s if needed
+- Critical operations (approval, message sending) are retried automatically
+
+### Startup Load
+- **⚠️ CAUTION:** Doubled batch size (10 apps) + halved delay (1s) increases startup API load
+- Servers with 100+ pending applications may trigger rate limiting during startup
+- Monitor 429 responses during initial batch processing
+- If rate limited at startup, reduce `STARTUP_BATCH_SIZE` to 5 or increase `STARTUP_BATCH_DELAY` to 2.0s
+- Consider adaptive batch sizing based on API response times for future enhancement
 
 ### Resource Usage
-- More frequent polling uses slightly more CPU
-- Difference is minimal (< 1% CPU increase)
+- More frequent polling uses slightly more CPU (estimated < 2% increase)
+- Difference is minimal for modern systems
 - Memory usage unchanged
+- Thread count unchanged
+
+### Monitoring Recommendations
+After deploying these changes:
+1. **Watch for 429 errors** in logs (rate limiting)
+2. **Monitor CPU usage** (should remain < 5% under normal load)
+3. **Track timeout failures** (should be < 1% of requests)
+4. **Measure actual performance** gains in your environment
+5. **Adjust parameters** if stability issues occur
 
 ### Rollback Plan
 If issues occur, simply increase the intervals:
 ```python
-POLL_INTERVAL = 0.1  # Back to 100ms
-APPROVAL_POLL_INTERVAL = 0.2  # Back to 200ms
-# Revert other changes as needed
+POLL_INTERVAL = 0.1  # Back to 100ms (was 0.05s)
+APPROVAL_POLL_INTERVAL = 0.2  # Back to 200ms (was 0.1s)
+STARTUP_BATCH_SIZE = 5  # Back to 5 apps (was 10)
+STARTUP_BATCH_DELAY = 2.0  # Back to 2 seconds (was 1.0s)
+# Also consider reverting timeouts to 10s if needed
+```
+
+### Adaptive Configuration (Recommended for Production)
+For best results in production, consider implementing adaptive polling:
+```python
+# Start conservative
+POLL_INTERVAL = 0.075  # 75ms (middle ground)
+APPROVAL_POLL_INTERVAL = 0.15  # 150ms (middle ground)
+
+# Monitor and adjust based on:
+# - Rate limit frequency (429 responses)
+# - API latency (average response time)
+# - Application volume (apps per minute)
 ```
 
 ## Future Optimizations
