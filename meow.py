@@ -67,7 +67,8 @@ def get_headers():
     }
 
 # Configuration
-POLL_INTERVAL = 1
+POLL_INTERVAL = 0.5  # Check for new applications every 0.5 seconds (faster detection)
+APPROVAL_CHECK_INTERVAL = 0.5  # Check approval conditions every 0.5 seconds (instant detection)
 SEND_RETRY_DELAY = 1
 MAX_TOTAL_SEND_TIME = 180
 CHANNEL_FIND_TIMEOUT = 30
@@ -297,7 +298,7 @@ def process_application(reqid, user_id):
         channel_id = find_existing_interview_channel(user_id)
         if channel_id:
             break
-        time.sleep(1)
+        time.sleep(0.5)  # Check every 0.5 seconds for faster channel detection
     
     if not channel_id:
         logger.warning(f"Could not find channel for reqid={reqid}")
@@ -380,7 +381,7 @@ def approval_monitor():
                 # Clear reminder state
                 add_two_people_reminded.discard(str(user_id))
         
-        time.sleep(2)  # Check every 2 seconds
+        time.sleep(APPROVAL_CHECK_INTERVAL)  # Check every 0.5 seconds for instant detection
 
 def main():
     """Main entry point."""
