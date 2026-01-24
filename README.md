@@ -1,8 +1,72 @@
-# Discord DM Bot with Token Rotation
+# Discord Bot Collection
+
+This repository contains multiple Discord bots for different purposes:
+
+1. **nox.py** - Discord DM Bot with Token Rotation for automatic member DMs
+2. **meow.py** - Event-driven Discord bot for application processing and interviews
+3. **gateway.py** - Gateway-based Discord bot implementation
+
+## meow.py - Application Processing Bot
+
+An event-driven Discord bot that automatically processes server join applications and conducts interviews via Discord.
+
+### Features
+
+- **Event-Driven Architecture**: Instantly responds to application submissions
+- **Automated Interview System**: Opens group DM channels for applicants
+- **Screenshot Verification**: Tracks when users submit required screenshots  
+- **Member Addition Monitoring**: Detects when users add others to group DMs
+- **Rate Limit Handling**: Robust rate limiting with exponential backoff
+- **Connection Pooling**: Efficient HTTP session management
+
+### Installation (meow.py)
+
+1. Install required dependencies:
+```bash
+pip install discord.py>=2.0.0 requests>=2.25.0
+```
+
+2. Configure the bot token using environment variable (recommended):
+```bash
+export DISCORD_TOKEN='your_discord_bot_token_here'
+```
+
+Alternatively, you can modify the TOKEN variable in the script (not recommended for security).
+
+3. Run the bot:
+```bash
+python meow.py
+```
+
+### Getting Your Discord Bot Token
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. Select your application (or create a new one)
+3. Go to the 'Bot' section
+4. Click 'Reset Token' or 'Copy' to get your token
+5. Set the token using: `export DISCORD_TOKEN='your_token_here'`
+
+### Error Messages
+
+If you see a **401 Unauthorized** error, it means:
+- Your Discord token is missing, empty, or invalid
+- The token has been revoked or regenerated
+
+The bot will now provide clear error messages with instructions on how to fix the issue:
+
+```
+❌ ERROR: Discord TOKEN is not configured!
+Please set your Discord bot token using one of these methods:
+  1. Set the DISCORD_TOKEN environment variable:
+     export DISCORD_TOKEN='your_bot_token_here'
+  2. Or modify the TOKEN variable in the script (not recommended)
+```
+
+## nox.py - DM Bot with Token Rotation
 
 A Discord bot that automatically DMs users when they join a server and supports mass DM functionality with automatic token rotation to avoid rate limits and bans.
 
-## Features
+### Features (nox.py)
 
 - **Automatic DM on Join**: Sends a customizable message to users when they join the server
 - **Token Rotation**: Automatically rotates between multiple bot tokens after a configurable number of DMs (default: 500)
@@ -13,7 +77,7 @@ A Discord bot that automatically DMs users when they join a server and supports 
 - **Colorful CLI Menu**: Eye-catching menu with colors and emojis
 - **DM by User ID**: Can DM users even if they're not in the server
 
-## Installation
+### Installation (nox.py)
 
 1. Install required dependencies:
 ```bash

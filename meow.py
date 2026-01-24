@@ -6,6 +6,8 @@ import time
 import random
 import asyncio
 import logging
+import os
+import sys
 from datetime import datetime, timezone
 
 # Global session for connection pooling (for hybrid REST calls where we still need them)
@@ -18,7 +20,8 @@ _global_rate_limit_lock = asyncio.Lock()
 # ---------------------------
 # Configuration / constants
 # ---------------------------
-TOKEN = ""
+# Try to load TOKEN from environment variable first, fallback to empty string
+TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 GUILD_ID = "1464067001256509452"
 OWN_USER_ID = "1411325023053938730"
 OWN_USER_ID_STR = str(OWN_USER_ID)  # Pre-convert for efficient string comparisons
@@ -43,20 +46,22 @@ COOKIES = {
     # ...your cookies here...
 }
 
-HEADERS_TEMPLATE = {
-    "accept": "*/*",
-    "accept-language": "en-US,en;q=0.9",
-    "authorization": TOKEN,
-    "origin": "https://discord.com",
-    "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "user-agent": "Mozilla/5.0",
-    "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
-}
+def get_headers():
+    """Get headers with current TOKEN value for API requests."""
+    return {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "authorization": TOKEN,
+        "origin": "https://discord.com",
+        "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": "Mozilla/5.0",
+        "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
+    }
 
 # Configuration
 APPLICATION_CHECK_INTERVAL = 30.0  # Check for new applications periodically (backup to events)
@@ -172,7 +177,7 @@ async def get_pending_applications():
         if after:
             url += f"&after={after}"
         
-        headers = HEADERS_TEMPLATE.copy()
+        headers = get_headers()
         headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
         
         try:
@@ -239,7 +244,7 @@ async def get_pending_applications():
 async def open_interview(request_id):
     await check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/join-requests/{request_id}/interview"
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     headers["content-type"] = "application/json"
     try:
@@ -260,7 +265,7 @@ async def open_interview(request_id):
 async def find_existing_interview_channel(user_id):
     await check_global_rate_limit()  # Respect global rate limit
     url = "https://discord.com/api/v9/users/@me/channels"
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers.pop("content-type", None)
     try:
         loop = asyncio.get_event_loop()
@@ -299,7 +304,7 @@ async def get_channel_recipients(channel_id):
     """Get the list of recipient user IDs in a group DM channel. Handles rate limits with retry."""
     await check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}"
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     
@@ -371,7 +376,7 @@ async def check_two_people_added(channel_id, applicant_user_id):
 async def message_already_sent(channel_id, content_without_mention, mention_user_id=None, min_ts=0.0):
     await check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
@@ -415,7 +420,7 @@ async def find_own_message_timestamp(channel_id, content_without_mention, mentio
     """
     await check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     try:
@@ -454,7 +459,7 @@ async def find_own_message_timestamp(channel_id, content_without_mention, mentio
 
 async def send_interview_message(channel_id, message, mention_user_id=None):
     await check_global_rate_limit()  # Respect global rate limit
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers["content-type"] = "application/json"
     data = {
@@ -518,7 +523,7 @@ async def notify_added_users(applicant_user_id, channel_id):
     message = f"<@{user1}> <@{user2}> join {SERVER_INVITE_LINK} so i can let u in"
     
     # We need to send this message with allowed_mentions for both users
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers["content-type"] = "application/json"
     data = {
@@ -556,7 +561,7 @@ async def notify_added_users(applicant_user_id, channel_id):
 async def approve_application(request_id):
     await check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests/id/{request_id}"
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["content-type"] = "application/json"
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
     data = {"action": "APPROVED"}
@@ -584,7 +589,7 @@ async def channel_has_image_from_user(channel_id, user_id, min_ts=0.0):
     """Check if user has sent an image in the channel after min_ts. Handles rate limits with retry."""
     await check_global_rate_limit()  # Respect global rate limit
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"  # Increased from 50 to 100
-    headers = HEADERS_TEMPLATE.copy()
+    headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers.pop("content-type", None)
     
@@ -947,11 +952,57 @@ async def main():
     logger.info("🚀 Starting meow.py - EVENT-DRIVEN ARCHITECTURE")
     logger.info("="*60)
     
+    # Validate TOKEN before starting
+    if not TOKEN:
+        logger.error("="*60)
+        logger.error("❌ ERROR: Discord TOKEN is not configured!")
+        logger.error("="*60)
+        logger.error("Please set your Discord bot token using one of these methods:")
+        logger.error("  1. Set the DISCORD_TOKEN environment variable:")
+        logger.error("     export DISCORD_TOKEN='your_bot_token_here'")
+        logger.error("  2. Or modify the TOKEN variable in the script (not recommended)")
+        logger.error("")
+        logger.error("To get your Discord bot token:")
+        logger.error("  1. Go to https://discord.com/developers/applications")
+        logger.error("  2. Select your application")
+        logger.error("  3. Go to the 'Bot' section")
+        logger.error("  4. Click 'Reset Token' or 'Copy' to get your token")
+        logger.error("="*60)
+        session.close()  # Close requests session before exit
+        sys.exit(1)
+    
     try:
         await bot.start(TOKEN)
+    except discord.errors.LoginFailure as e:
+        logger.error("="*60)
+        logger.error("❌ AUTHENTICATION FAILED: Invalid Discord token")
+        logger.error("="*60)
+        logger.error("The provided Discord token is invalid or has been revoked.")
+        logger.error("Error details: %s", str(e))
+        logger.error("")
+        logger.error("Please check your token and try again:")
+        logger.error("  1. Go to https://discord.com/developers/applications")
+        logger.error("  2. Select your application")
+        logger.error("  3. Go to the 'Bot' section")
+        logger.error("  4. Click 'Reset Token' to generate a new token")
+        logger.error("  5. Set the new token using: export DISCORD_TOKEN='your_new_token'")
+        logger.error("="*60)
+        await bot.close()
+        session.close()  # Close requests session before exit
+        sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         await bot.close()
+        session.close()  # Close requests session before exit
+    except Exception as e:
+        logger.error("="*60)
+        logger.error("❌ UNEXPECTED ERROR occurred during bot startup")
+        logger.error("="*60)
+        logger.exception("Error details: %s", str(e))
+        logger.error("="*60)
+        await bot.close()
+        session.close()  # Close requests session before exit
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
