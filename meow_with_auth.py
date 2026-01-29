@@ -397,14 +397,14 @@ def main():
     print(f"Auth Handler Enabled: {USE_AUTH_HANDLER}")
     print("="*60)
     
-    # Start auth monitor thread if auth handler is enabled
+    # Start appropriate monitor thread based on configuration
     if USE_AUTH_HANDLER:
+        # Use auth handler's monitoring
         auth_monitor_thread = threading.Thread(target=auth_handler.monitor_pending_auths, daemon=True)
         auth_monitor_thread.start()
         print("✅ Auth monitor thread started")
-    
-    # Start approval monitor thread (for original meow.py logic)
-    if not USE_AUTH_HANDLER:
+    else:
+        # Use original meow.py approval monitoring
         monitor_thread = threading.Thread(target=approval_monitor, daemon=True)
         monitor_thread.start()
         print("✅ Approval monitor thread started")
@@ -412,8 +412,8 @@ def main():
     print("Polling for applications...")
     while True:
         try:
-            apps = get_pending_applications()
-            for app in apps:
+            pending_applications = get_pending_applications()
+            for app in pending_applications:
                 reqid = app.get("id")
                 user_id = app.get("user_id")
                 if not reqid or not user_id:

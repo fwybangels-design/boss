@@ -4,6 +4,7 @@ import time
 import logging
 import os
 import threading
+import random
 
 # Logging setup
 logging.basicConfig(
@@ -34,6 +35,11 @@ OWN_USER_ID = "1411325023053938730"
 AUTH_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"  # Default to Telegram auth link
 RESTORECORD_URL = ""  # Optional: Set this to your RestoreCord verification URL
 
+# Timing constants
+CHANNEL_CREATION_WAIT = 2  # Seconds to wait for Discord to create channel
+AUTH_CHECK_INTERVAL = 5  # Seconds between pending auth checks
+RETRY_AFTER_DEFAULT = 2  # Default retry delay for rate limits
+
 # Messages
 AUTH_REQUEST_MESSAGE = (
     "🔐 **Authentication Required**\n\n"
@@ -54,6 +60,9 @@ AUTH_FILES = {
 }
 
 COOKIES = {}
+
+# Thread lock for file operations
+file_lock = threading.Lock()
 
 def get_headers():
     """Get headers with current TOKEN value for API requests."""
@@ -77,24 +86,30 @@ def get_headers():
 # ---------------------------
 
 def load_json_file(filename):
-    """Load data from a JSON file."""
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading {filename}: {e}")
-    return {}
+    """Load data from a JSON file (thread-safe)."""
+    with file_lock:
+        if os.path.exists(filename):
+            try:
+                with open(filename, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading {filename}: {e}")
+        return {}
 
 def save_json_file(filename, data):
-    """Save data to a JSON file."""
-    try:
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
-        return True
-    except Exception as e:
-        logger.error(f"Error saving {filename}: {e}")
-        return False
+    """Save data to a JSON file (thread-safe with atomic write)."""
+    with file_lock:
+        try:
+            # Write to temporary file first for atomic operation
+            temp_filename = filename + '.tmp'
+            with open(temp_filename, 'w') as f:
+                json.dump(data, f, indent=2)
+            # Atomic rename
+            os.replace(temp_filename, filename)
+            return True
+        except Exception as e:
+            logger.error(f"Error saving {filename}: {e}")
+            return False
 
 def is_user_authorized(user_id):
     """Check if a user is in the authorized users list."""
@@ -177,7 +192,7 @@ def open_interview(request_id):
     try:
         resp = requests.post(url, headers=headers, cookies=COOKIES, timeout=10)
         if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 2)
+            retry_after = resp.json().get("retry_after", RETRY_AFTER_DEFAULT)
             time.sleep(retry_after)
         return resp.status_code in (200, 201)
     except Exception as e:
@@ -192,7 +207,7 @@ def find_existing_interview_channel(user_id):
     try:
         resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
         if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 2)
+            retry_after = resp.json().get("retry_after", RETRY_AFTER_DEFAULT)
             time.sleep(retry_after)
             return None
         channels = resp.json()
@@ -213,7 +228,6 @@ def send_message_to_channel(channel_id, message):
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers["content-type"] = "application/json"
     
-    import random
     data = {
         "content": message,
         "nonce": str(random.randint(10**17, 10**18-1)),
@@ -252,11 +266,39 @@ def approve_application(request_id):
         else:
             logger.warning(f"Failed to approve. Status: {resp.status_code}")
         if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 2)
+            retry_after = resp.json().get("retry_after", RETRY_AFTER_DEFAULT)
             time.sleep(retry_after)
     except Exception as e:
         logger.error(f"Exception approving application: {e}")
     return False
+
+# ---------------------------
+# Helper Functions
+# ---------------------------
+
+def open_interview_and_send_message(request_id, user_id, message):
+    """
+    Helper function to open interview, find channel, and send message.
+    Reduces code duplication and improves maintainability.
+    """
+    # Open interview
+    if not open_interview(request_id):
+        logger.warning(f"Failed to open interview for request {request_id}")
+        return None
+    
+    # Wait for channel creation
+    time.sleep(CHANNEL_CREATION_WAIT)
+    
+    # Find channel
+    channel_id = find_existing_interview_channel(user_id)
+    if not channel_id:
+        logger.error(f"Could not find channel for user {user_id}")
+        return None
+    
+    # Send message
+    send_message_to_channel(channel_id, message)
+    
+    return channel_id
 
 # ---------------------------
 # Auth Checking Logic
@@ -273,14 +315,8 @@ def check_and_process_auth(user_id, request_id):
     if is_user_authorized(user_id):
         logger.info(f"✅ User {user_id} is already authorized - auto-accepting!")
         
-        # Open interview to send welcome message
-        open_interview(request_id)
-        time.sleep(2)  # Wait for channel to be created
-        
-        # Find channel and send welcome message
-        channel_id = find_existing_interview_channel(user_id)
-        if channel_id:
-            send_message_to_channel(channel_id, AUTO_ACCEPT_MESSAGE)
+        # Use helper function to open interview and send welcome message
+        channel_id = open_interview_and_send_message(request_id, user_id, AUTO_ACCEPT_MESSAGE)
         
         # Auto-approve the application
         approve_application(request_id)
@@ -289,18 +325,12 @@ def check_and_process_auth(user_id, request_id):
     else:
         logger.info(f"⏳ User {user_id} is NOT authorized - requesting auth")
         
-        # Open interview for auth request
-        open_interview(request_id)
-        time.sleep(2)  # Wait for channel to be created
+        # Use helper function to open interview and send auth request
+        channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE)
         
-        # Find channel
-        channel_id = find_existing_interview_channel(user_id)
         if not channel_id:
-            logger.error(f"Could not find channel for user {user_id}")
+            logger.error(f"Could not process auth request for user {user_id}")
             return False, None
-        
-        # Send auth request message
-        send_message_to_channel(channel_id, AUTH_REQUEST_MESSAGE)
         
         # Add to pending auth list
         add_pending_auth(user_id, request_id, channel_id)
@@ -338,10 +368,10 @@ def monitor_pending_auths():
                     # Remove from pending
                     remove_pending_auth(user_id_str)
             
-            time.sleep(5)  # Check every 5 seconds
+            time.sleep(AUTH_CHECK_INTERVAL)  # Check every N seconds
         except Exception as e:
             logger.error(f"Error in auth monitor: {e}")
-            time.sleep(5)
+            time.sleep(AUTH_CHECK_INTERVAL)
 
 # ---------------------------
 # Manual Auth Management

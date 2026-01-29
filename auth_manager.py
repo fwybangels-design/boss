@@ -80,6 +80,19 @@ def authorize_user():
         print("❌ User ID cannot be empty.")
         return
     
+    # Validate user ID is numeric
+    if not user_id.isdigit():
+        print("❌ User ID must be a numeric Discord snowflake.")
+        return
+    
+    # Validate length (Discord snowflakes are typically 17-19 digits)
+    if len(user_id) < 17 or len(user_id) > 20:
+        print("⚠️  Warning: User ID length is unusual for a Discord snowflake.")
+        confirm = input("Continue anyway? (y/n): ").strip().lower()
+        if confirm != 'y':
+            print("❌ Operation cancelled.")
+            return
+    
     username = input("Enter Username (optional): ").strip()
     username = username if username else None
     
@@ -166,6 +179,14 @@ def clear_all_authorized_users():
         return
     
     try:
+        # Create a backup first
+        import shutil
+        import time
+        backup_file = AUTH_FILES["authorized_users"] + f".backup.{int(time.time())}"
+        if os.path.exists(AUTH_FILES["authorized_users"]):
+            shutil.copy2(AUTH_FILES["authorized_users"], backup_file)
+            print(f"✅ Backup created: {backup_file}")
+        
         # Clear the authorized users file
         with open(AUTH_FILES["authorized_users"], 'w') as f:
             json.dump({}, f)
