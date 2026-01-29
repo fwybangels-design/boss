@@ -8,13 +8,12 @@ Q: "Which RestoreCord API permissions do I need?"
 
 A: You only need ONE permission:
 
-   ✅ members - This is all you need!
-
-   Optional (helpful but not required):
-   ✅ servers - For validation
+   ✅ Read everything (data access) - To see who's verified
 
    NOT needed:
-   ❌ account, bots, analytics, server operations
+   ❌ Pull members (the bot handles adding users, not RestoreCord)
+   ❌ Server operations
+   ❌ Bots, analytics, account
 
 
 ════════════════════════════════════════════════════════════════
@@ -26,7 +25,7 @@ A: You only need ONE permission:
    → Go to your RestoreCord dashboard
    → Navigate to Settings → API
    → Click "Create New Key"
-   → Select: ✅ members
+   → Select: ✅ Read everything (data access)
    → Copy the generated key (looks like: rc_xxxxxxxxxxxxx)
 
 
@@ -61,10 +60,13 @@ A: You only need ONE permission:
 
 When user applies to join:
 1. Bot checks RestoreCord API: "Is this user verified?"
-2. If YES → Auto-accept immediately ✅
-3. If NO → Send RestoreCord verification link
-4. User clicks link and verifies
-5. Bot detects verification → Auto-accept ✅
+2. If YES → Bot auto-accepts the application ✅
+3. If NO → Bot sends RestoreCord verification link
+4. User clicks link and verifies on RestoreCord
+5. Bot checks again → Detects verification → Auto-accepts ✅
+
+The BOT handles all Discord operations (opening GC, approving applications).
+RestoreCord only provides verification status (read-only).
 
 
 ════════════════════════════════════════════════════════════════
@@ -87,11 +89,31 @@ Here's what your auth_handler.py should look like:
 
 # RestoreCord Configuration
 RESTORECORD_URL = "https://verify.myserver.com"
-RESTORECORD_API_KEY = "rc_9x8y7z6w5v4u3t2s"
+RESTORECORD_API_KEY = "rc_9x8y7z6w5v4u3t2s"  # With "Read everything" permission
 RESTORECORD_SERVER_ID = "1464067001256509452"
 
 
 That's it! Just 3 lines to change.
+
+
+════════════════════════════════════════════════════════════════
+   WHAT THE BOT DOES
+════════════════════════════════════════════════════════════════
+
+✅ Bot handles:
+   - Opening group chat with applicant
+   - Sending verification link
+   - Checking RestoreCord for verification status
+   - Approving applications
+   - Adding users to Discord server
+
+✅ RestoreCord provides:
+   - Verification system
+   - Read-only API to check who's verified
+   - Verification link for users
+
+The bot does all the Discord work, RestoreCord just tells us
+who's verified!
 
 
 ════════════════════════════════════════════════════════════════
@@ -101,5 +123,5 @@ That's it! Just 3 lines to change.
 → Run: python3 test_restorecord.py (to check configuration)
 → Read: RESTORECORD_QUICKSTART.md (for step-by-step guide)
 → Check: Bot logs for error messages
-→ Verify: API key has "members" permission enabled
+→ Verify: API key has "Read everything" permission enabled
 
