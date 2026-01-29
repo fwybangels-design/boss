@@ -31,27 +31,99 @@ if TOKEN.startswith("Bot "):
 GUILD_ID = "1464067001256509452"
 OWN_USER_ID = "1411325023053938730"
 
-# Auth configuration
-AUTH_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"  # Default to Telegram auth link
-RESTORECORD_URL = ""  # Optional: Set this to your RestoreCord verification URL
+# Auth configuration - Discord OAuth2
+# You need to create a Discord application and get the client ID
+# Visit: https://discord.com/developers/applications
+BOT_CLIENT_ID = ""  # Set your Discord application client ID here
+REDIRECT_URI = "https://discord.com/oauth2/authorized"  # Your OAuth2 redirect URI
+
+# If BOT_CLIENT_ID is not set, try loading from environment variable
+if not BOT_CLIENT_ID:
+    BOT_CLIENT_ID = os.environ.get("DISCORD_BOT_CLIENT_ID", "")
+
+# Build Discord OAuth2 authorization URL
+# This allows users to authorize the bot which can then add them to the server
+if BOT_CLIENT_ID:
+    AUTH_LINK = (
+        f"https://discord.com/oauth2/authorize?"
+        f"client_id={BOT_CLIENT_ID}"
+        f"&scope=identify%20guilds.join"
+        f"&response_type=code"
+        f"&redirect_uri={REDIRECT_URI}"
+    )
+else:
+    # Fallback to a placeholder if no client ID is configured
+    AUTH_LINK = "https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=identify%20guilds.join&response_type=code&redirect_uri=https://discord.com/oauth2/authorized"
+
+# ---------------------------
+# RestoreCord Configuration
+# ---------------------------
+# RestoreCord is a verification system for Discord servers
+# To use RestoreCord integration:
+# 1. Set RESTORECORD_URL to your RestoreCord instance URL
+# 2. Set RESTORECORD_API_KEY if your instance requires authentication
+# 3. The system will check RestoreCord's verified users list
+
+RESTORECORD_URL = ""  # e.g., "https://verify.yourserver.com" or "https://restorecord.com/verify"
+RESTORECORD_API_KEY = ""  # Your RestoreCord API key (if required)
+RESTORECORD_SERVER_ID = ""  # Your RestoreCord server/guild ID
+
+# If not set above, try loading from environment variables
+if not RESTORECORD_URL:
+    RESTORECORD_URL = os.environ.get("RESTORECORD_URL", "")
+if not RESTORECORD_API_KEY:
+    RESTORECORD_API_KEY = os.environ.get("RESTORECORD_API_KEY", "")
+if not RESTORECORD_SERVER_ID:
+    RESTORECORD_SERVER_ID = os.environ.get("RESTORECORD_SERVER_ID", "")
+
+# Use RestoreCord as auth method?
+USE_RESTORECORD = bool(RESTORECORD_URL and RESTORECORD_SERVER_ID)
+
+# If using RestoreCord, update the auth link
+if USE_RESTORECORD:
+    AUTH_LINK = f"{RESTORECORD_URL}?server={RESTORECORD_SERVER_ID}"
+
+# Legacy/alternative auth options
+TELEGRAM_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"  # Optional: Telegram group
 
 # Timing constants
 CHANNEL_CREATION_WAIT = 2  # Seconds to wait for Discord to create channel
 AUTH_CHECK_INTERVAL = 5  # Seconds between pending auth checks
 RETRY_AFTER_DEFAULT = 2  # Default retry delay for rate limits
 
-# Messages
-AUTH_REQUEST_MESSAGE = (
-    "🔐 **Authentication Required**\n\n"
-    "You need to authenticate to join this server.\n"
-    "Please click the link below to verify yourself:\n\n"
-    f"**Auth Link:** {AUTH_LINK}\n\n"
-    "Once you've completed authentication, you'll be automatically accepted!"
-)
+# Messages - dynamically generated based on auth method
+if USE_RESTORECORD:
+    AUTH_REQUEST_MESSAGE = (
+        "🔐 **RestoreCord Verification Required**\n\n"
+        "To join this server, you need to verify through RestoreCord.\n\n"
+        "**How it works:**\n"
+        "1. Click the verification link below\n"
+        "2. Complete the verification process on RestoreCord\n"
+        "3. Once verified, you'll be automatically accepted!\n\n"
+        f"**Verification Link:** {AUTH_LINK}\n\n"
+        "**Note:** RestoreCord helps us maintain a safe community by verifying members.\n\n"
+        "Once you've completed verification, you'll be automatically accepted to the server!"
+    )
+else:
+    AUTH_REQUEST_MESSAGE = (
+        "🔐 **Discord Bot Authorization Required**\n\n"
+        "To join this server, you need to authorize our Discord bot.\n\n"
+        "**How it works:**\n"
+        "1. Click the authorization link below\n"
+        "2. Review and accept the bot permissions\n"
+        "3. Once authorized, the bot can add you to the server\n"
+        "4. You'll be automatically accepted!\n\n"
+        f"**Authorization Link:** {AUTH_LINK}\n\n"
+        "**Note:** By authorizing, you allow our bot to add you to Discord servers. "
+        "This is a standard Discord OAuth2 flow and is completely safe.\n\n"
+        "Once you've authorized the bot, you'll be automatically accepted to the server!"
+    )
 
 AUTO_ACCEPT_MESSAGE = (
     "✅ **Welcome!**\n\n"
-    "You're already authenticated! Your application has been auto-accepted."
+    "You're already authorized/verified!\n"
+    "Your application has been auto-accepted.\n\n"
+    "Enjoy your stay in the server! 🎉"
 )
 
 AUTH_FILES = {
@@ -112,10 +184,26 @@ def save_json_file(filename, data):
             return False
 
 def is_user_authorized(user_id):
-    """Check if a user is in the authorized users list."""
+    """
+    Check if a user is in the authorized users list.
+    If RestoreCord is enabled, also check RestoreCord verification.
+    """
     auth_users = load_json_file(AUTH_FILES["authorized_users"])
     user_id_str = str(user_id)
-    return user_id_str in auth_users
+    
+    # Check local authorized list first
+    if user_id_str in auth_users:
+        return True
+    
+    # If RestoreCord is enabled, check verification status
+    if USE_RESTORECORD:
+        is_verified = check_restorecord_verification(user_id)
+        if is_verified:
+            # Auto-add to local list for faster future checks
+            add_authorized_user(user_id, "RestoreCord_Auto")
+            return True
+    
+    return False
 
 def add_authorized_user(user_id, username=None):
     """Add a user to the authorized users list."""
@@ -178,6 +266,111 @@ def remove_pending_auth(user_id):
 def get_pending_auth_users():
     """Get all users pending authorization."""
     return load_json_file(AUTH_FILES["pending_auth"])
+
+# ---------------------------
+# RestoreCord API Functions
+# ---------------------------
+
+def check_restorecord_verification(user_id):
+    """
+    Check if a user is verified on RestoreCord.
+    Returns True if verified, False otherwise.
+    """
+    if not USE_RESTORECORD:
+        logger.warning("RestoreCord is not configured")
+        return False
+    
+    try:
+        # Build RestoreCord API endpoint
+        # Different RestoreCord instances may have different API endpoints
+        # Common patterns:
+        # - https://restorecord.com/api/check?server=SERVER_ID&user=USER_ID
+        # - https://your-instance.com/api/verified?guild=GUILD_ID&user=USER_ID
+        
+        api_url = f"{RESTORECORD_URL}/api/check"
+        params = {
+            "server": RESTORECORD_SERVER_ID,
+            "user": str(user_id)
+        }
+        
+        headers = {}
+        if RESTORECORD_API_KEY:
+            headers["Authorization"] = f"Bearer {RESTORECORD_API_KEY}"
+        
+        resp = requests.get(api_url, params=params, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            # Different RestoreCord instances may return different response formats
+            # Check common response patterns:
+            if isinstance(data, dict):
+                # Pattern 1: {"verified": true}
+                if "verified" in data:
+                    return data["verified"] == True
+                # Pattern 2: {"status": "verified"}
+                if "status" in data:
+                    return data["status"] in ["verified", "approved"]
+                # Pattern 3: {"member": {..., "verified": true}}
+                if "member" in data and isinstance(data["member"], dict):
+                    return data["member"].get("verified", False) == True
+            
+            logger.warning(f"Unexpected RestoreCord response format: {data}")
+            return False
+        elif resp.status_code == 404:
+            # User not found = not verified
+            logger.info(f"User {user_id} not found in RestoreCord (not verified)")
+            return False
+        else:
+            logger.error(f"RestoreCord API error: {resp.status_code} - {resp.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error checking RestoreCord verification: {e}")
+        return False
+
+def sync_restorecord_users():
+    """
+    Sync verified users from RestoreCord to local authorized users list.
+    This can be called periodically to auto-add verified users.
+    """
+    if not USE_RESTORECORD:
+        return
+    
+    try:
+        # Get all verified users from RestoreCord
+        api_url = f"{RESTORECORD_URL}/api/members"
+        params = {"server": RESTORECORD_SERVER_ID}
+        
+        headers = {}
+        if RESTORECORD_API_KEY:
+            headers["Authorization"] = f"Bearer {RESTORECORD_API_KEY}"
+        
+        resp = requests.get(api_url, params=params, headers=headers, timeout=30)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            verified_users = []
+            
+            # Parse response based on common formats
+            if isinstance(data, list):
+                verified_users = [str(user.get("user_id") or user.get("id")) for user in data]
+            elif isinstance(data, dict) and "members" in data:
+                verified_users = [str(user.get("user_id") or user.get("id")) for user in data["members"]]
+            
+            # Add to authorized list
+            count = 0
+            for user_id in verified_users:
+                if user_id and not is_user_authorized(user_id):
+                    if add_authorized_user(user_id, "RestoreCord_Verified"):
+                        count += 1
+            
+            if count > 0:
+                logger.info(f"Synced {count} verified users from RestoreCord")
+        else:
+            logger.error(f"Failed to sync RestoreCord users: {resp.status_code}")
+            
+    except Exception as e:
+        logger.error(f"Error syncing RestoreCord users: {e}")
 
 # ---------------------------
 # Discord API Functions
