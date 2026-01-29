@@ -61,11 +61,13 @@ else:
 # RestoreCord is a verification system for Discord servers
 # To use RestoreCord integration:
 # 1. Set RESTORECORD_URL to your RestoreCord instance URL
-# 2. Set RESTORECORD_API_KEY if your instance requires authentication
-# 3. The system will check RestoreCord's verified users list
+# 2. Set RESTORECORD_API_KEY with appropriate permissions:
+#    - Required: "Read everything" (data access) - To check verified users
+#    - Recommended: "Pull members" (server operations) - To add users to server
+# 3. Set RESTORECORD_SERVER_ID to your Discord server/guild ID
 
 RESTORECORD_URL = ""  # e.g., "https://verify.yourserver.com" or "https://restorecord.com/verify"
-RESTORECORD_API_KEY = ""  # Your RestoreCord API key (if required)
+RESTORECORD_API_KEY = ""  # Your RestoreCord API key with read access + pull members
 RESTORECORD_SERVER_ID = ""  # Your RestoreCord server/guild ID
 
 # If not set above, try loading from environment variables
@@ -78,6 +80,11 @@ if not RESTORECORD_SERVER_ID:
 
 # Use RestoreCord as auth method?
 USE_RESTORECORD = bool(RESTORECORD_URL and RESTORECORD_SERVER_ID)
+
+# Enable RestoreCord "pull members" feature?
+# If enabled, RestoreCord will automatically add verified users to your Discord server
+# Requires "Pull members" permission in your RestoreCord API key
+USE_RESTORECORD_PULL = True  # Set to False to disable auto-pull feature
 
 # If using RestoreCord, update the auth link
 if USE_RESTORECORD:
@@ -93,17 +100,32 @@ RETRY_AFTER_DEFAULT = 2  # Default retry delay for rate limits
 
 # Messages - dynamically generated based on auth method
 if USE_RESTORECORD:
-    AUTH_REQUEST_MESSAGE = (
-        "🔐 **RestoreCord Verification Required**\n\n"
-        "To join this server, you need to verify through RestoreCord.\n\n"
-        "**How it works:**\n"
-        "1. Click the verification link below\n"
-        "2. Complete the verification process on RestoreCord\n"
-        "3. Once verified, you'll be automatically accepted!\n\n"
-        f"**Verification Link:** {AUTH_LINK}\n\n"
-        "**Note:** RestoreCord helps us maintain a safe community by verifying members.\n\n"
-        "Once you've completed verification, you'll be automatically accepted to the server!"
-    )
+    if USE_RESTORECORD_PULL:
+        AUTH_REQUEST_MESSAGE = (
+            "🔐 **RestoreCord Verification Required**\n\n"
+            "To join this server, you need to verify through RestoreCord.\n\n"
+            "**How it works:**\n"
+            "1. Click the verification link below\n"
+            "2. Complete the verification process on RestoreCord\n"
+            "3. Once verified, **RestoreCord will automatically add you to the server!**\n"
+            "4. No manual approval needed - it's instant!\n\n"
+            f"**Verification Link:** {AUTH_LINK}\n\n"
+            "**Note:** RestoreCord helps us maintain a safe community by verifying members. "
+            "After verification, you'll be pulled into the server automatically.\n\n"
+            "Complete the verification and you're in! 🚀"
+        )
+    else:
+        AUTH_REQUEST_MESSAGE = (
+            "🔐 **RestoreCord Verification Required**\n\n"
+            "To join this server, you need to verify through RestoreCord.\n\n"
+            "**How it works:**\n"
+            "1. Click the verification link below\n"
+            "2. Complete the verification process on RestoreCord\n"
+            "3. Once verified, you'll be automatically accepted!\n\n"
+            f"**Verification Link:** {AUTH_LINK}\n\n"
+            "**Note:** RestoreCord helps us maintain a safe community by verifying members.\n\n"
+            "Once you've completed verification, you'll be automatically accepted to the server!"
+        )
 else:
     AUTH_REQUEST_MESSAGE = (
         "🔐 **Discord Bot Authorization Required**\n\n"
@@ -119,12 +141,20 @@ else:
         "Once you've authorized the bot, you'll be automatically accepted to the server!"
     )
 
-AUTO_ACCEPT_MESSAGE = (
-    "✅ **Welcome!**\n\n"
-    "You're already authorized/verified!\n"
-    "Your application has been auto-accepted.\n\n"
-    "Enjoy your stay in the server! 🎉"
-)
+if USE_RESTORECORD and USE_RESTORECORD_PULL:
+    AUTO_ACCEPT_MESSAGE = (
+        "✅ **Welcome!**\n\n"
+        "You're already verified on RestoreCord!\n"
+        "RestoreCord has automatically added you to the server.\n\n"
+        "Welcome to the community! 🎉"
+    )
+else:
+    AUTO_ACCEPT_MESSAGE = (
+        "✅ **Welcome!**\n\n"
+        "You're already authorized/verified!\n"
+        "Your application has been auto-accepted.\n\n"
+        "Enjoy your stay in the server! 🎉"
+    )
 
 AUTH_FILES = {
     "authorized_users": "authorized_users.json",
@@ -186,7 +216,7 @@ def save_json_file(filename, data):
 def is_user_authorized(user_id):
     """
     Check if a user is in the authorized users list.
-    If RestoreCord is enabled, also check RestoreCord verification.
+    If RestoreCord is enabled, also check RestoreCord verification and optionally pull user to server.
     """
     auth_users = load_json_file(AUTH_FILES["authorized_users"])
     user_id_str = str(user_id)
@@ -195,12 +225,12 @@ def is_user_authorized(user_id):
     if user_id_str in auth_users:
         return True
     
-    # If RestoreCord is enabled, check verification status
+    # If RestoreCord is enabled, check verification and pull if verified
     if USE_RESTORECORD:
-        is_verified = check_restorecord_verification(user_id)
+        is_verified, was_pulled = restorecord_auto_process(user_id)
         if is_verified:
-            # Auto-add to local list for faster future checks
-            add_authorized_user(user_id, "RestoreCord_Auto")
+            if was_pulled:
+                logger.info(f"✅ User {user_id} verified and pulled via RestoreCord")
             return True
     
     return False
@@ -371,6 +401,91 @@ def sync_restorecord_users():
             
     except Exception as e:
         logger.error(f"Error syncing RestoreCord users: {e}")
+
+def restorecord_pull_member(user_id):
+    """
+    Use RestoreCord's "pull members" API to add a verified user to the Discord server.
+    This requires "Pull members" permission in your RestoreCord API key.
+    
+    Returns: True if successfully pulled, False otherwise
+    """
+    if not USE_RESTORECORD:
+        logger.warning("RestoreCord is not configured")
+        return False
+    
+    if not USE_RESTORECORD_PULL:
+        logger.info("RestoreCord pull members is disabled")
+        return False
+    
+    try:
+        # RestoreCord "pull members" API endpoint
+        # This tells RestoreCord to add the verified user to your Discord server
+        api_url = f"{RESTORECORD_URL}/api/pull"
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        if RESTORECORD_API_KEY:
+            headers["Authorization"] = f"Bearer {RESTORECORD_API_KEY}"
+        
+        data = {
+            "server": RESTORECORD_SERVER_ID,
+            "user": str(user_id)
+        }
+        
+        resp = requests.post(api_url, headers=headers, json=data, timeout=10)
+        
+        if resp.status_code in (200, 201):
+            logger.info(f"✅ RestoreCord successfully pulled user {user_id} to server")
+            return True
+        elif resp.status_code == 404:
+            logger.warning(f"User {user_id} not found in RestoreCord (cannot pull)")
+            return False
+        elif resp.status_code == 403:
+            logger.error(f"Forbidden: API key may not have 'pull members' permission")
+            return False
+        else:
+            logger.error(f"RestoreCord pull error: {resp.status_code} - {resp.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error pulling member via RestoreCord: {e}")
+        return False
+
+def restorecord_auto_process(user_id):
+    """
+    Complete RestoreCord auto-processing workflow:
+    1. Check if user is verified on RestoreCord
+    2. If verified, use "pull members" to add them to Discord server
+    3. Add to local authorized list
+    
+    Returns: (is_verified, was_pulled)
+    """
+    if not USE_RESTORECORD:
+        return False, False
+    
+    # Step 1: Check verification
+    is_verified = check_restorecord_verification(user_id)
+    
+    if not is_verified:
+        logger.info(f"User {user_id} is not verified on RestoreCord")
+        return False, False
+    
+    logger.info(f"User {user_id} is verified on RestoreCord")
+    
+    # Step 2: Pull to server if enabled
+    was_pulled = False
+    if USE_RESTORECORD_PULL:
+        was_pulled = restorecord_pull_member(user_id)
+        if was_pulled:
+            logger.info(f"✅ User {user_id} pulled to server via RestoreCord")
+        else:
+            logger.warning(f"Could not pull user {user_id} via RestoreCord")
+    
+    # Step 3: Add to authorized list regardless
+    add_authorized_user(user_id, "RestoreCord_Verified")
+    
+    return True, was_pulled
 
 # ---------------------------
 # Discord API Functions
