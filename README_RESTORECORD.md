@@ -1,5 +1,11 @@
 # RestoreCord Integration - Complete Guide
 
+## ⚡ Real-Time Detection
+
+**The bot checks for verification every 2 seconds!** When you verify on RestoreCord, you'll be auto-accepted within 2-3 seconds. This is fast enough to feel nearly instant while being safe for API rate limits.
+
+---
+
 ## 🎯 Quick Answer
 
 **Q:** What RestoreCord API permissions do I need?
@@ -161,7 +167,7 @@ RestoreCord API: User456 NOT verified ❌
 Bot: Opening group chat with User456
 Bot: "Please verify: https://verify.myserver.com"
 [User456 clicks link and verifies]
-[5 seconds later...]
+[2-3 seconds later...]
 Bot: Checking RestoreCord again...
 RestoreCord API: User456 is NOW verified ✅
 Bot: Auto-accepting application!
@@ -197,6 +203,9 @@ Response: [{"user_id": "123", "verified": true}, ...]
 
 ## ❓ FAQ
 
+**Q: Will it detect my verification instantly/in real-time?**  
+A: **Almost!** The bot checks every 2 seconds, so you'll be auto-accepted within 2-3 seconds after verifying. This is fast enough to feel nearly instant while being safe for API rate limits.
+
 **Q: Do I need "Pull members" permission?**  
 A: No! The bot handles adding users to Discord. RestoreCord only tells who's verified.
 
@@ -210,7 +219,7 @@ A: Yes! Set `BOT_CLIENT_ID` instead of RestoreCord settings.
 A: Use `meow_with_auth.py` which integrates auth checking with meow.py logic.
 
 **Q: How often does the bot check verification?**  
-A: Every 5 seconds for pending applications (configurable via `AUTH_CHECK_INTERVAL`).
+A: Every 2 seconds for pending applications (configurable via `AUTH_CHECK_INTERVAL`). You can make it even faster by setting it to 1 second, though 2 seconds is the sweet spot for balance.
 
 ---
 

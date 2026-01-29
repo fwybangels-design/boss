@@ -147,7 +147,7 @@ User verifies → Bot checks again → Verified → Bot auto-accepts ✅
 ### Optional Settings
 - `BOT_CLIENT_ID` - For Discord OAuth2 (alternative to RestoreCord)
 - `REDIRECT_URI` - OAuth2 redirect URL
-- `AUTH_CHECK_INTERVAL` - How often to check (default: 5 seconds)
+- `AUTH_CHECK_INTERVAL` - How often to check (default: 2 seconds - near-instant detection!)
 
 ---
 

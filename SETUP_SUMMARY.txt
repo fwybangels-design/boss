@@ -55,7 +55,7 @@ A: You only need ONE permission:
 
 
 ════════════════════════════════════════════════════════════════
-   HOW IT WORKS
+   HOW IT WORKS (Real-Time Detection!)
 ════════════════════════════════════════════════════════════════
 
 When user applies to join:
@@ -63,7 +63,10 @@ When user applies to join:
 2. If YES → Bot auto-accepts the application ✅
 3. If NO → Bot sends RestoreCord verification link
 4. User clicks link and verifies on RestoreCord
-5. Bot checks again → Detects verification → Auto-accepts ✅
+5. Bot checks again (every 2 seconds) → Detects verification → Auto-accepts ✅
+
+⚡ TIMING: The bot checks every 2 seconds, so verification is detected 
+   within 2-3 seconds - fast enough to feel nearly instant!
 
 The BOT handles all Discord operations (opening GC, approving applications).
 RestoreCord only provides verification status (read-only).

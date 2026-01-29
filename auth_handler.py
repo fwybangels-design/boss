@@ -90,7 +90,7 @@ TELEGRAM_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"  # Optional: Telegram gr
 
 # Timing constants
 CHANNEL_CREATION_WAIT = 2  # Seconds to wait for Discord to create channel
-AUTH_CHECK_INTERVAL = 5  # Seconds between pending auth checks
+AUTH_CHECK_INTERVAL = 2  # Seconds between pending auth checks (faster = more real-time detection)
 RETRY_AFTER_DEFAULT = 2  # Default retry delay for rate limits
 
 # Messages - dynamically generated based on auth method
@@ -101,10 +101,11 @@ if USE_RESTORECORD:
         "**How it works:**\n"
         "1. Click the verification link below\n"
         "2. Complete the verification process on RestoreCord\n"
-        "3. Once verified, you'll be automatically accepted to the server!\n\n"
+        "3. Once verified, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
         f"**Verification Link:** {AUTH_LINK}\n\n"
-        "**Note:** RestoreCord helps us maintain a safe community by verifying members. "
-        "After you verify, come back and your application will be auto-approved!\n\n"
+        "**Note:** After you verify on RestoreCord, our bot will detect it almost instantly "
+        "(within 2-3 seconds) and automatically approve your application. Just wait a moment! "
+        "RestoreCord helps us maintain a safe community.\n\n"
         "Complete the verification to get in! 🚀"
     )
 else:
@@ -114,11 +115,11 @@ else:
         "**How it works:**\n"
         "1. Click the authorization link below\n"
         "2. Review and accept the bot permissions\n"
-        "3. Once authorized, the bot can add you to the server\n"
-        "4. You'll be automatically accepted!\n\n"
+        "3. Once authorized, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
         f"**Authorization Link:** {AUTH_LINK}\n\n"
         "**Note:** By authorizing, you allow our bot to add you to Discord servers. "
-        "This is a standard Discord OAuth2 flow and is completely safe.\n\n"
+        "This is a standard Discord OAuth2 flow and is completely safe. "
+        "After authorization, the bot will detect it almost instantly!\n\n"
         "Once you've authorized the bot, you'll be automatically accepted to the server!"
     )
 
