@@ -4,7 +4,95 @@ This repository contains multiple Discord bots for different purposes:
 
 1. **nox.py** - Discord DM Bot with Token Rotation for automatic member DMs
 2. **meow.py** - Event-driven Discord bot for application processing and interviews
-3. **gateway.py** - Gateway-based Discord bot implementation
+3. **meow_with_auth.py** - Application bot with authentication-based auto-accept (NEW!)
+4. **auth_handler.py** - Authentication handler module for auto-accepting authorized users
+5. **gateway.py** - Gateway-based Discord bot implementation
+
+## NEW: Auth Handler - Authentication-Based Auto-Accept System
+
+An authentication-based auto-accept system that allows pre-authorized users to be automatically accepted when they apply to join the server. Users not in the authorization list are prompted to complete authentication before acceptance.
+
+### Key Features
+
+- **🔐 Auto-Accept for Authorized Users**: Pre-authorized users are instantly approved
+- **📝 Auth Request for New Users**: Non-authorized users receive an auth link
+- **🔄 Automatic Monitoring**: Auto-approves users once they complete authentication
+- **💾 File-Based Storage**: Simple JSON files for managing users
+- **🛠️ CLI Management Tool**: Easy command-line interface for managing authorized users
+
+### Quick Start (Auth Handler)
+
+1. **Install dependencies:**
+   ```bash
+   pip install requests>=2.25.0
+   ```
+
+2. **Configure your token in `auth_handler.py`:**
+   ```python
+   TOKEN = "your_discord_user_token_here"
+   ```
+
+3. **Set your auth link (e.g., Telegram, RestoreCord):**
+   ```python
+   AUTH_LINK = "https://t.me/addlist/your_group_link"
+   ```
+
+4. **Run the bot with auth handler:**
+   ```bash
+   python meow_with_auth.py
+   ```
+
+5. **Manage authorized users with the CLI tool:**
+   ```bash
+   python auth_manager.py
+   ```
+
+### How Auth Handler Works
+
+**For Authorized Users:**
+1. User applies to join server
+2. Bot checks if user is in authorized list
+3. If YES → Auto-approves immediately with welcome message
+
+**For Non-Authorized Users:**
+1. User applies to join server
+2. Bot checks if user is NOT in authorized list
+3. Opens group chat and sends auth link
+4. User completes authentication (joins Telegram/RestoreCord)
+5. Admin adds user to authorized list
+6. Bot detects and auto-approves application
+
+### Managing Authorized Users
+
+Use the CLI tool to manage the whitelist:
+
+```bash
+python auth_manager.py
+```
+
+Options:
+- List authorized users
+- Add/remove users manually
+- Import users from file (bulk add)
+- Export authorized users
+- View pending auth requests
+
+**Quick manual authorization:**
+```bash
+python auth_manager.py
+# Select option 3 and enter user ID
+```
+
+### Documentation
+
+See [AUTH_HANDLER_README.md](AUTH_HANDLER_README.md) for complete documentation including:
+- Detailed setup instructions
+- Configuration options
+- API integration examples
+- RestoreCord integration guide
+- Troubleshooting
+
+---
 
 ## meow.py - Application Processing Bot
 

@@ -24,3 +24,5 @@ Thumbs.db
 bot_config.json
 dmed_users.txt
 meow_state.json
+authorized_users.json
+pending_auth.json
