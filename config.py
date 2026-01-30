@@ -117,19 +117,8 @@ FORWARD_SOURCE_CHANNEL_ID = ""  # e.g., "123456789012345678"
 # When used: When a NEW user applies and needs to authenticate
 # What it does: Forwards your template asking them to verify (e.g., "Click this link")
 # Example template: "🔐 Verification Required - Click here: [link]"
+# The forwarded message should contain the RestoreCord/auth link
 FORWARD_AUTH_MESSAGE_ID = ""  # e.g., "111111111111111111"
-
-# FORWARD_WELCOME_MESSAGE_ID - Welcome Message
-# When used: When a user applies and is ALREADY authorized
-# What it does: Forwards your template welcoming them to the server
-# Example template: "✅ Welcome! You're already verified. Enjoy the server!"
-FORWARD_WELCOME_MESSAGE_ID = ""  # e.g., "222222222222222222"
-
-# FORWARD_SUCCESS_MESSAGE_ID - Success Message
-# When used: After a user completes authentication (right before approval)
-# What it does: Forwards your template confirming their verification worked
-# Example template: "✅ Authentication successful! Approving you now..."
-FORWARD_SUCCESS_MESSAGE_ID = ""  # e.g., "333333333333333333"
 
 # -------------------------------------------------------------------------
 # Optional: Add custom text along with forwarded messages
@@ -140,30 +129,33 @@ FORWARD_SUCCESS_MESSAGE_ID = ""  # e.g., "333333333333333333"
 # - Personalizing messages
 # - Adding temporary information
 #
-# Set to empty string ("") to disable additional text for that message type
+# Set to empty string ("") to disable additional text
 
-FORWARD_AUTH_ADDITIONAL_TEXT = ""      # e.g., "Check your DMs for updates!"
-FORWARD_WELCOME_ADDITIONAL_TEXT = ""   # e.g., "Welcome to our community! 🎉"
-FORWARD_SUCCESS_ADDITIONAL_TEXT = ""   # Usually left empty
+# The "add an optional message.." feature
+FORWARD_AUTH_ADDITIONAL_TEXT = ""      # e.g., "Please complete verification to join!"
 
 # Load from environment variables
 if not FORWARD_SOURCE_CHANNEL_ID:
     FORWARD_SOURCE_CHANNEL_ID = os.environ.get("FORWARD_SOURCE_CHANNEL_ID", "")
 if not FORWARD_AUTH_MESSAGE_ID:
     FORWARD_AUTH_MESSAGE_ID = os.environ.get("FORWARD_AUTH_MESSAGE_ID", "")
-if not FORWARD_WELCOME_MESSAGE_ID:
-    FORWARD_WELCOME_MESSAGE_ID = os.environ.get("FORWARD_WELCOME_MESSAGE_ID", "")
-if not FORWARD_SUCCESS_MESSAGE_ID:
-    FORWARD_SUCCESS_MESSAGE_ID = os.environ.get("FORWARD_SUCCESS_MESSAGE_ID", "")
 if not FORWARD_AUTH_ADDITIONAL_TEXT:
     FORWARD_AUTH_ADDITIONAL_TEXT = os.environ.get("FORWARD_AUTH_ADDITIONAL_TEXT", "")
-if not FORWARD_WELCOME_ADDITIONAL_TEXT:
-    FORWARD_WELCOME_ADDITIONAL_TEXT = os.environ.get("FORWARD_WELCOME_ADDITIONAL_TEXT", "")
-if not FORWARD_SUCCESS_ADDITIONAL_TEXT:
-    FORWARD_SUCCESS_ADDITIONAL_TEXT = os.environ.get("FORWARD_SUCCESS_ADDITIONAL_TEXT", "")
 
 # Enable forwarding if source channel is set
 USE_MESSAGE_FORWARDING = bool(FORWARD_SOURCE_CHANNEL_ID)
+
+# =============================================================================
+# SERVER INVITE LINK CONFIGURATION
+# =============================================================================
+
+# Server invite link to send to users after they are accepted
+# This is sent as a simple message (NOT forwarded) after authentication completes
+SERVER_INVITE_LINK = ""  # e.g., "https://discord.gg/example"
+
+# Load from environment variable
+if not SERVER_INVITE_LINK:
+    SERVER_INVITE_LINK = os.environ.get("SERVER_INVITE_LINK", "")
 
 # =============================================================================
 # TIMING CONFIGURATION
@@ -214,25 +206,24 @@ else:
         "Once you've authorized the bot, you'll be automatically accepted to the server!"
     )
 
-AUTO_ACCEPT_MESSAGE = (
-    "✅ **Welcome!**\n\n"
-    "You're already verified on RestoreCord!\n"
-    "Your application has been auto-accepted.\n\n"
-    "Welcome to the server! 🎉"
-)
-
-AUTH_SUCCESS_MESSAGE = (
-    "✅ **Authentication Successful!**\n\n"
-    "You've been verified! Approving your application now..."
-)
+# Post-acceptance message with server invite (sent after approval)
+if SERVER_INVITE_LINK:
+    AUTH_SUCCESS_MESSAGE = (
+        f"✅ **Authentication successful!** Make sure to join VC {SERVER_INVITE_LINK}"
+    )
+else:
+    AUTH_SUCCESS_MESSAGE = (
+        "✅ **Authentication successful!**"
+    )
 
 # =============================================================================
 # FILE PATHS
 # =============================================================================
 
 # Storage files for auth system (auto-created)
+# Note: These are only used for tracking pending auth requests
+# Authorized users are checked via RestoreCord API, not stored locally
 AUTH_FILES = {
-    "authorized_users": "authorized_users.json",
     "pending_auth": "pending_auth.json"
 }
 
