@@ -462,11 +462,13 @@ def forward_message_to_channel(channel_id, source_channel_id, message_id):
     headers["content-type"] = "application/json"
     
     # Discord's forward message API payload
+    # Type 1 = FORWARD (creates point-in-time snapshot of the message)
+    # Type 0 = DEFAULT (standard reply/reference)
     data = {
         "message_reference": {
             "channel_id": str(source_channel_id),
             "message_id": str(message_id),
-            "type": 1  # Type 1 indicates a forward
+            "type": 1
         },
         "nonce": str(random.randint(10**17, 10**18-1)),
         "tts": False
