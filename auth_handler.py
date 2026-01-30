@@ -88,6 +88,30 @@ if USE_RESTORECORD:
 # Legacy/alternative auth options
 TELEGRAM_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"  # Optional: Telegram group
 
+# ---------------------------
+# Message Forwarding Configuration
+# ---------------------------
+# Instead of sending new messages, the bot can forward pre-existing messages from a "secret server"
+# This is useful if you want to forward templated messages that are already formatted
+# Set these to enable message forwarding:
+FORWARD_SOURCE_CHANNEL_ID = ""  # Channel ID where the template messages exist
+FORWARD_AUTH_MESSAGE_ID = ""    # Message ID to forward for auth requests
+FORWARD_WELCOME_MESSAGE_ID = ""  # Message ID to forward for welcome/auto-accept messages
+FORWARD_SUCCESS_MESSAGE_ID = ""  # Message ID to forward for auth success messages
+
+# If not set above, try loading from environment variables
+if not FORWARD_SOURCE_CHANNEL_ID:
+    FORWARD_SOURCE_CHANNEL_ID = os.environ.get("FORWARD_SOURCE_CHANNEL_ID", "")
+if not FORWARD_AUTH_MESSAGE_ID:
+    FORWARD_AUTH_MESSAGE_ID = os.environ.get("FORWARD_AUTH_MESSAGE_ID", "")
+if not FORWARD_WELCOME_MESSAGE_ID:
+    FORWARD_WELCOME_MESSAGE_ID = os.environ.get("FORWARD_WELCOME_MESSAGE_ID", "")
+if not FORWARD_SUCCESS_MESSAGE_ID:
+    FORWARD_SUCCESS_MESSAGE_ID = os.environ.get("FORWARD_SUCCESS_MESSAGE_ID", "")
+
+# Enable message forwarding if source channel is configured
+USE_MESSAGE_FORWARDING = bool(FORWARD_SOURCE_CHANNEL_ID)
+
 # Timing constants
 CHANNEL_CREATION_WAIT = 2  # Seconds to wait for Discord to create channel
 AUTH_CHECK_INTERVAL = 2  # Seconds between pending auth checks (faster = more real-time detection)
@@ -420,8 +444,85 @@ def find_existing_interview_channel(user_id):
         logger.error(f"Error finding channel: {e}")
     return None
 
-def send_message_to_channel(channel_id, message):
-    """Send a message to a Discord channel."""
+def forward_message_to_channel(channel_id, source_channel_id, message_id):
+    """
+    Forward a message from one channel to another.
+    This uses Discord's native message forwarding API.
+    
+    Args:
+        channel_id: Destination channel ID
+        source_channel_id: Source channel ID where the message exists
+        message_id: ID of the message to forward
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    headers = get_headers()
+    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
+    headers["content-type"] = "application/json"
+    
+    # Discord's forward message API payload
+    data = {
+        "message_reference": {
+            "channel_id": str(source_channel_id),
+            "message_id": str(message_id),
+            "type": 1  # Type 1 indicates a forward
+        },
+        "nonce": str(random.randint(10**17, 10**18-1)),
+        "tts": False
+    }
+    
+    url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
+    
+    try:
+        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
+        if resp.status_code == 200 or resp.status_code == 201:
+            logger.info(f"Forwarded message {message_id} to channel {channel_id}")
+            return True
+        elif resp.status_code == 429:
+            retry_after = resp.json().get("retry_after", 10)
+            logger.warning(f"Rate limited! Waiting {retry_after}s")
+            time.sleep(retry_after)
+        else:
+            logger.warning(f"Failed to forward message. Status: {resp.status_code}, Response: {resp.text}")
+    except Exception as e:
+        logger.error(f"Exception forwarding message: {e}")
+    return False
+
+def send_message_to_channel(channel_id, message, message_type="default"):
+    """
+    Send a message to a Discord channel.
+    If message forwarding is enabled and a message ID is configured for the message type,
+    it will forward the pre-configured message instead of sending new content.
+    
+    Args:
+        channel_id: Destination channel ID
+        message: Message content to send (used if forwarding is disabled)
+        message_type: Type of message - "auth_request", "welcome", "auth_success", or "default"
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Check if we should forward instead of sending
+    if USE_MESSAGE_FORWARDING and FORWARD_SOURCE_CHANNEL_ID:
+        message_id = None
+        
+        # Determine which message to forward based on type
+        if message_type == "auth_request" and FORWARD_AUTH_MESSAGE_ID:
+            message_id = FORWARD_AUTH_MESSAGE_ID
+        elif message_type == "welcome" and FORWARD_WELCOME_MESSAGE_ID:
+            message_id = FORWARD_WELCOME_MESSAGE_ID
+        elif message_type == "auth_success" and FORWARD_SUCCESS_MESSAGE_ID:
+            message_id = FORWARD_SUCCESS_MESSAGE_ID
+        
+        # If we have a message ID configured, forward it
+        if message_id:
+            logger.info(f"Using message forwarding for {message_type} message")
+            return forward_message_to_channel(channel_id, FORWARD_SOURCE_CHANNEL_ID, message_id)
+        else:
+            logger.info(f"No message ID configured for {message_type}, falling back to regular send")
+    
+    # Fallback to regular message sending
     headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers["content-type"] = "application/json"
@@ -474,10 +575,16 @@ def approve_application(request_id):
 # Helper Functions
 # ---------------------------
 
-def open_interview_and_send_message(request_id, user_id, message):
+def open_interview_and_send_message(request_id, user_id, message, message_type="default"):
     """
     Helper function to open interview, find channel, and send message.
     Reduces code duplication and improves maintainability.
+    
+    Args:
+        request_id: Application request ID
+        user_id: User ID to send message to
+        message: Message content to send
+        message_type: Type of message for forwarding ("auth_request", "welcome", "auth_success", or "default")
     """
     # Open interview
     if not open_interview(request_id):
@@ -494,7 +601,7 @@ def open_interview_and_send_message(request_id, user_id, message):
         return None
     
     # Send message
-    send_message_to_channel(channel_id, message)
+    send_message_to_channel(channel_id, message, message_type)
     
     return channel_id
 
@@ -514,7 +621,7 @@ def check_and_process_auth(user_id, request_id):
         logger.info(f"✅ User {user_id} is already authorized - auto-accepting!")
         
         # Use helper function to open interview and send welcome message
-        channel_id = open_interview_and_send_message(request_id, user_id, AUTO_ACCEPT_MESSAGE)
+        channel_id = open_interview_and_send_message(request_id, user_id, AUTO_ACCEPT_MESSAGE, "welcome")
         
         # Auto-approve the application
         approve_application(request_id)
@@ -524,7 +631,7 @@ def check_and_process_auth(user_id, request_id):
         logger.info(f"⏳ User {user_id} is NOT authorized - requesting auth")
         
         # Use helper function to open interview and send auth request
-        channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE)
+        channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE, "auth_request")
         
         if not channel_id:
             logger.error(f"Could not process auth request for user {user_id}")
@@ -557,7 +664,7 @@ def monitor_pending_auths():
                             "✅ **Authentication Successful!**\n\n"
                             "You've been verified! Approving your application now..."
                         )
-                        send_message_to_channel(channel_id, success_msg)
+                        send_message_to_channel(channel_id, success_msg, "auth_success")
                     
                     # Approve the application
                     if request_id:
