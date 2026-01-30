@@ -1,25 +1,26 @@
 # Discord Auth Application Bot
 
-A Discord bot that automatically processes server join applications with an authentication system. Pre-authorized users are instantly accepted, while new users must complete authentication before being admitted.
+A Discord bot that automatically processes server join applications with RestoreCord authentication. Users are verified in real-time via RestoreCord API - no local storage needed.
 
 ## 📚 Quick Summary - How It Works
 
 **In 30 seconds:**
 
 1. Someone applies to join your Discord server
-2. Bot checks: "Are they authorized?"
-   - ✅ **YES** → Forwards welcome message → Auto-approves them instantly
-   - ❌ **NO** → Forwards auth request → They authenticate → Forwards success message → Auto-approves them
+2. Bot checks RestoreCord API: "Are they verified?"
+   - ✅ **YES** → Auto-approves immediately (NO interview channel opened, NO messages sent)
+   - ❌ **NO** → Opens interview → Forwards auth request → They authenticate → Auto-approves → Sends success message
 
-**Message Forwarding Explained:**
+**Message Forwarding:**
 
-Instead of typing new messages each time, the bot **forwards pre-made template messages** from your "secret server":
+The bot forwards a pre-made auth request message from your "secret server":
+- **FORWARD_AUTH_MESSAGE_ID** = Template asking users to verify (contains RestoreCord link)
+- **FORWARD_AUTH_ADDITIONAL_TEXT** = Optional extra text to add with the forward
 
-- **FORWARD_AUTH_MESSAGE_ID** = Template asking users to verify (e.g., "Click this link")
-- **FORWARD_WELCOME_MESSAGE_ID** = Template welcoming pre-approved users (e.g., "You're verified!")
-- **FORWARD_SUCCESS_MESSAGE_ID** = Template confirming verification worked (e.g., "Success!")
+**Post-Acceptance Message:**
 
-**Why forwarding?** Consistent formatting, easy updates, professional appearance, no bot restart needed to change messages.
+After a user completes auth and is approved, bot sends a simple success message (NOT forwarded):
+- Example: "✅ Authentication successful! Make sure to join VC https://discord.gg/example"
 
 📖 **For detailed explanation, see [HOW_IT_WORKS.md](HOW_IT_WORKS.md)**
 
@@ -27,15 +28,15 @@ Instead of typing new messages each time, the bot **forwards pre-made template m
 
 ## 🌟 Features
 
-- **Auto-Accept for Authorized Users**: Users in the authorization list are automatically approved
-- **Auth Request for New Users**: Non-authorized users receive an authentication link
-- **Real-time Monitoring**: Automatically approves users once they complete authentication (2-3 seconds)
-- **Message Forwarding**: Forward pre-existing messages from a "secret server" instead of sending new ones
+- **RestoreCord API Integration**: Real-time verification via RestoreCord API polling
+- **No Local Storage**: No authorized_users.json file - all checks via API
+- **Silent Auto-Accept**: Already verified users are auto-approved WITHOUT opening interview channels
+- **Auth Request Forwarding**: Forward pre-existing auth request messages from a "secret server"
 - **Optional Additional Text**: Add custom text along with forwarded messages
+- **Post-Acceptance Message**: Simple success message with server invite link (not forwarded)
 - **Centralized Configuration**: Single `config.py` file for all settings
-- **RestoreCord Integration**: Support for RestoreCord verification system
-- **CLI Management Tool**: Easy command-line interface for managing authorized users
-- **File-Based Storage**: Simple JSON files for managing users
+- **CLI Management Tool**: View pending auth requests and check user verification status
+- **Real-time Monitoring**: Automatically approves users within 2-3 seconds of verification
 
 ## 📋 Quick Start
 
@@ -57,48 +58,49 @@ TOKEN = "your_discord_user_token_here"
 GUILD_ID = "your_server_id"
 OWN_USER_ID = "your_user_id"
 
-# Choose your authentication method
-BOT_CLIENT_ID = "your_discord_app_client_id"  # For Discord OAuth2
-# OR
-RESTORECORD_URL = "https://verify.yourserver.com"  # For RestoreCord
+# RestoreCord configuration (REQUIRED)
+RESTORECORD_URL = "https://verify.yourserver.com"
 RESTORECORD_SERVER_ID = "your_server_id"
-# OR
-AUTH_LINK = "https://t.me/addlist/your_telegram_group"  # For Telegram/other
+RESTORECORD_API_KEY = "your_api_key"  # Optional but recommended
+
+# Server invite link (sent after approval)
+SERVER_INVITE_LINK = "https://discord.gg/example"
 ```
 
 **Alternatively, use environment variables** (more secure):
 ```bash
 export DISCORD_TOKEN="your_token"
-export DISCORD_BOT_CLIENT_ID="your_client_id"
 export RESTORECORD_URL="https://verify.yourserver.com"
+export RESTORECORD_SERVER_ID="your_server_id"
+export RESTORECORD_API_KEY="your_api_key"
+export SERVER_INVITE_LINK="https://discord.gg/example"
 # etc.
 ```
 
 ### 3. (Optional) Configure Message Forwarding
 
-Instead of sending new messages, you can forward pre-existing messages from a "secret server".
+Instead of sending new messages, you can forward pre-existing auth request messages from a "secret server".
 
 In `config.py`:
 
 ```python
-# Enable message forwarding
+# Enable message forwarding for auth requests
 FORWARD_SOURCE_CHANNEL_ID = "123456789012345678"  # Channel ID in your secret server
 FORWARD_AUTH_MESSAGE_ID = "987654321098765432"    # Message ID for auth requests
-FORWARD_WELCOME_MESSAGE_ID = "111222333444555666" # Message ID for welcome messages
-FORWARD_SUCCESS_MESSAGE_ID = "222333444555666777" # Message ID for success messages
 
 # Optional: Add extra text along with the forwarded message
-FORWARD_AUTH_ADDITIONAL_TEXT = "Check your DMs for more info!"
-FORWARD_WELCOME_ADDITIONAL_TEXT = "Welcome to our server! 🎉"
-FORWARD_SUCCESS_ADDITIONAL_TEXT = ""  # Leave empty for no additional text
+FORWARD_AUTH_ADDITIONAL_TEXT = "Please complete verification to join!"
 ```
 
 **Setting up forwarding:**
-1. Create a "secret server" with a channel containing your template messages
-2. Copy the channel ID and message IDs (Right-click → Copy ID with Developer Mode enabled)
-3. Configure them in `config.py`
-4. The bot will forward these messages instead of sending new ones
-5. Optionally set additional text to send along with each forward
+1. Create a "secret server" with a channel containing your auth request template message
+2. The message should contain the RestoreCord verification link
+3. Copy the channel ID and message ID (Right-click → Copy ID with Developer Mode enabled)
+4. Configure them in `config.py`
+5. The bot will forward this message instead of sending new ones
+6. Optionally set additional text to send along with each forward
+
+**Note:** Only auth request messages are forwarded. Success messages are simple text (not forwarded).
 
 ### 4. Start the Bot
 
@@ -112,47 +114,49 @@ Expected output:
 Discord Application Bot Started (with Auth Handler)
 ============================================================
 Auth Handler Enabled: True
+RestoreCord Enabled: True
 Message Forwarding: True (if configured)
 ============================================================
 ✅ Auth monitor thread started
 Polling for applications...
 ```
 
-### 6. Manage Authorized Users
+### 5. Manage Pending Auth Requests
 
 ```bash
 python auth_manager.py
 ```
 
 Select options:
-1. **List Authorized Users** - View all users in the whitelist
-2. **View Pending Auth Requests** - See who's waiting for auth
-3. **Authorize a User** - Add a user to whitelist (manual)
-4. **Deauthorize a User** - Remove a user from whitelist
-5. **Import Users from File** - Bulk add from text file
-6. **Export Authorized Users** - Create backup
+1. **List Pending Auth Users** - See who's waiting for auth completion
+2. **Check User Verification Status** - Check if a user is verified on RestoreCord
+3. **View RestoreCord Configuration** - See current RestoreCord settings
+4. **Exit**
+
+**Note:** This tool no longer manages authorized users because authorization is checked via RestoreCord API in real-time.
 
 ## 📖 How It Works
 
-### For Authorized Users:
+### For Already Verified Users:
 1. User applies to join server
-2. Bot checks if user is in `authorized_users.json`
-3. ✅ **If YES**: Opens interview channel → Sends welcome message → Auto-approves immediately
+2. Bot checks RestoreCord API: "Is user verified?"
+3. ✅ **If YES**: Bot immediately auto-approves WITHOUT opening interview channel or sending messages
+   - This is silent and instant - user just gets accepted
 
-### For Non-Authorized Users:
+### For Non-Verified Users:
 1. User applies to join server
-2. Bot checks if user is NOT in `authorized_users.json`
-3. ⏳ Opens group chat → Sends auth request with link → Adds to `pending_auth.json`
-4. User clicks link and completes authentication
-5. Admin adds user to authorized list (manually or automatically)
-6. Bot monitors and detects user is now authorized (every 2 seconds)
-7. ✅ Sends success message → Auto-approves application
+2. Bot checks RestoreCord API: "Is user verified?"
+3. ⏳ **If NO**: Opens interview channel → Forwards/sends auth request with RestoreCord link → Adds to pending list
+4. User clicks RestoreCord link and completes verification
+5. Bot monitors RestoreCord API (checks every 2 seconds)
+6. Bot detects user is now verified
+7. ✅ Bot approves application → Sends success message with server invite link
 
 ### With Message Forwarding:
-- Instead of sending new messages, the bot forwards pre-configured messages from your secret server
-- Optionally adds custom text along with the forward (e.g., "Welcome! Check your DMs")
-- This allows consistent formatting and keeps your templates in one place
-- Messages always come from the secret server, no matter which server runs the application
+- Instead of sending new auth request messages, the bot forwards a pre-configured message from your secret server
+- The forwarded message should contain the RestoreCord verification link
+- Optionally adds custom text along with the forward (e.g., "Complete verification to join!")
+- Success messages are simple text (NOT forwarded)
 
 ## 🔧 Configuration
 
@@ -166,25 +170,22 @@ TOKEN = ""                    # Your Discord user token
 GUILD_ID = ""                 # Your server/guild ID
 OWN_USER_ID = ""              # Your Discord user ID
 
-# Auth method (choose one)
-BOT_CLIENT_ID = ""            # For Discord OAuth2
-RESTORECORD_URL = ""          # For RestoreCord
-AUTH_LINK = ""                # Or custom auth link
+# RestoreCord configuration (REQUIRED)
+RESTORECORD_URL = ""          # Your RestoreCord instance URL
+RESTORECORD_SERVER_ID = ""    # Your server ID on RestoreCord
+RESTORECORD_API_KEY = ""      # Optional API key
+
+# Server invite link (sent after approval)
+SERVER_INVITE_LINK = ""       # e.g., "https://discord.gg/example"
 
 # Message forwarding (optional)
 FORWARD_SOURCE_CHANNEL_ID = ""  # Secret server channel
 FORWARD_AUTH_MESSAGE_ID = ""    # Auth request message
-FORWARD_WELCOME_MESSAGE_ID = "" # Welcome message
-FORWARD_SUCCESS_MESSAGE_ID = "" # Success message
-
-# Optional additional text with forwards
-FORWARD_AUTH_ADDITIONAL_TEXT = ""     # Extra text with auth forward
-FORWARD_WELCOME_ADDITIONAL_TEXT = ""  # Extra text with welcome forward
-FORWARD_SUCCESS_ADDITIONAL_TEXT = ""  # Extra text with success forward
+FORWARD_AUTH_ADDITIONAL_TEXT = ""  # Extra text with auth forward
 
 # Timing
 CHANNEL_CREATION_WAIT = 2     # Wait for Discord to create channel
-AUTH_CHECK_INTERVAL = 2       # How often to check for new auths (seconds)
+AUTH_CHECK_INTERVAL = 2       # How often to check for new verifications (seconds)
 ```
 
 ### Environment Variables
@@ -193,137 +194,108 @@ For better security, use environment variables (config.py will automatically loa
 
 ```bash
 export DISCORD_TOKEN="your_token"
-export DISCORD_BOT_CLIENT_ID="your_client_id"
 export RESTORECORD_URL="https://verify.yourserver.com"
 export RESTORECORD_SERVER_ID="your_server_id"
 export RESTORECORD_API_KEY="your_api_key"
+export SERVER_INVITE_LINK="https://discord.gg/example"
 export FORWARD_SOURCE_CHANNEL_ID="channel_id"
 export FORWARD_AUTH_MESSAGE_ID="message_id"
-export FORWARD_WELCOME_MESSAGE_ID="message_id"
-export FORWARD_SUCCESS_MESSAGE_ID="message_id"
-export FORWARD_AUTH_ADDITIONAL_TEXT="Check your DMs!"
-export FORWARD_WELCOME_ADDITIONAL_TEXT="Welcome! 🎉"
-export FORWARD_SUCCESS_ADDITIONAL_TEXT=""
+export FORWARD_AUTH_ADDITIONAL_TEXT="Complete verification!"
 ```
 
 ## 📱 Usage Examples
 
-### Example 1: Pre-Authorized User
+### Example 1: Already Verified User
 
 ```
 User "John" (ID: 123456789) applies
-→ Bot checks authorized list
-→ Found! User is authorized
-→ Opens interview channel
-→ Forwards/sends welcome message
-→ Auto-approves application
-→ ✅ John is now in the server
+→ Bot checks RestoreCord API
+→ John IS verified on RestoreCord
+→ Bot immediately approves (NO interview channel, NO messages)
+→ ✅ John is now in the server (silent approval)
 ```
 
-### Example 2: New User with Manual Auth
+### Example 2: New User Needs Verification
 
 ```
 User "Jane" (ID: 987654321) applies
-→ Bot checks authorized list
-→ Not found! User needs auth
-→ Opens group chat
-→ Forwards/sends auth request: "🔐 Click this link: [link]"
-→ Jane clicks link and joins Telegram/completes verification
-→ Admin runs: python auth_manager.py → Add Jane (ID: 987654321)
-→ Bot detects Jane is authorized (within 2 seconds)
-→ Forwards/sends success message
-→ Auto-approves application
-→ ✅ Jane is now in the server
-```
-
-### Example 3: RestoreCord Auto-Detection
-
-```
-User "Bob" (ID: 111222333) applies
-→ Bot checks authorized list (not found locally)
 → Bot checks RestoreCord API
-→ Bob is verified on RestoreCord!
-→ Bot auto-adds Bob to local authorized list
-→ Opens interview channel
-→ Forwards/sends welcome message
-→ Auto-approves application
-→ ✅ Bob is now in the server (fully automatic!)
+→ Jane is NOT verified
+→ Bot opens interview channel
+→ Bot forwards/sends auth request: "🔐 Verify on RestoreCord: [link]"
+→ Jane clicks link and completes RestoreCord verification
+→ Bot detects Jane is verified (within 2 seconds)
+→ Bot approves application
+→ Bot sends: "✅ Authentication successful! Make sure to join VC https://discord.gg/example"
+→ ✅ Jane is now in the server
 ```
 
 ## 🛠️ CLI Management Tool
 
-The `auth_manager.py` provides an interactive interface:
+The `auth_manager.py` provides an interface for viewing pending auth requests:
 
 ```bash
 $ python auth_manager.py
 
 =================================================================
-              Discord Auth Handler - Management CLI
+               Auth Manager CLI
 =================================================================
 
-1. List Authorized Users
-2. View Pending Auth Requests
-3. Authorize a User
-4. Deauthorize a User
-5. Import Users from File
-6. Export Authorized Users
-7. Exit
+1. List Pending Auth Users
+2. Check User Verification Status (RestoreCord)
+3. View RestoreCord Configuration
+4. Exit
 
-Select an option (1-7):
+Select an option (1-4):
 ```
 
-### Bulk Adding Users
+### Key Functions
 
-Create a text file with user IDs (one per line):
+1. **List Pending Auth Users** - View all users waiting for verification completion
+2. **Check User Verification Status** - Check if a specific user is verified on RestoreCord
+3. **View RestoreCord Configuration** - See current RestoreCord settings
 
-```
-123456789012345678
-987654321098765432
-111222333444555666
-```
-
-Then use option 5 to import them all at once.
+**Note:** Authorization is now handled entirely via RestoreCord API. There is no local authorized users list to manage.
 
 ## 🔒 RestoreCord Integration
 
-RestoreCord is a verification system for Discord servers. The bot can automatically detect when users verify through RestoreCord.
+RestoreCord is a verification system for Discord servers. The bot automatically checks user verification via RestoreCord API in real-time.
 
 ### Setup:
 
-1. Set `RESTORECORD_URL` to your RestoreCord instance
+1. Set `RESTORECORD_URL` to your RestoreCord instance URL
 2. Set `RESTORECORD_SERVER_ID` to your server ID
 3. (Optional) Set `RESTORECORD_API_KEY` for API access
 4. Users who verify on RestoreCord are automatically authorized
 
 ### How it works:
 
-- When a user applies, bot checks local list first
-- If not found locally, bot checks RestoreCord API
-- If verified on RestoreCord, user is auto-authorized
-- This happens in real-time with no manual intervention
+- When a user applies, bot checks RestoreCord API in real-time
+- If verified, user is auto-approved immediately (no interview channel)
+- If not verified, user gets auth request with RestoreCord link
+- Bot polls API every 2 seconds to detect when verification completes
+- No local storage - always checks the authoritative RestoreCord API
 
 ## 📁 File Structure
 
 ```
 .
 ├── config.py                # 🔧 Central configuration file (EDIT THIS!)
-├── auth_handler.py          # Core authentication system
+├── auth_handler.py          # Core authentication system (RestoreCord API)
 ├── meow_with_auth.py        # Bot with auth integration
-├── auth_manager.py          # CLI management tool
+├── auth_manager.py          # CLI tool for viewing pending auth
 ├── requirements.txt         # Python dependencies
 ├── README.md                # This file
+├── HOW_IT_WORKS.md          # Detailed explanation
 ├── .gitignore               # Git ignore rules
 │
-├── authorized_users.json    # Authorized users list (auto-created)
 └── pending_auth.json        # Pending auth requests (auto-created)
 ```
 
-**Important:** All configuration is done in `config.py` - this one file controls all bots!
-├── .gitignore              # Git ignore rules
-│
-├── authorized_users.json   # Authorized users list (auto-created)
-└── pending_auth.json       # Pending auth requests (auto-created)
-```
+**Important:** 
+- All configuration is done in `config.py` - this one file controls everything!
+- No `authorized_users.json` file - authorization is via RestoreCord API
+- Only `pending_auth.json` is used to track users waiting for verification
 
 ## 🐛 Troubleshooting
 
@@ -359,13 +331,15 @@ python auth_manager.py
 
 **Check configuration:**
 - Verify `FORWARD_SOURCE_CHANNEL_ID` is correct
-- Verify message IDs exist in that channel
+- Verify `FORWARD_AUTH_MESSAGE_ID` exists in that channel
 - Make sure the bot/user has access to the source channel
 
 **Test manually:**
 - Try sending a message to the channel first
 - Verify the channel is accessible
 - Check Discord API errors in logs
+
+**Note:** Only auth request messages are forwarded. Success messages are simple text.
 
 ## 🔐 Security Best Practices
 
@@ -379,15 +353,26 @@ python auth_manager.py
 ## 📊 Performance
 
 - **Auth check interval**: 2 seconds (configurable)
-- **Auto-approve time**: 2-3 seconds after authorization
-- **RestoreCord check**: Real-time on application
+- **Auto-approve time**: 2-3 seconds after RestoreCord verification
+- **RestoreCord check**: Real-time via API on each application
 - **Message forwarding**: Same speed as regular sending
+- **Already verified users**: Instant approval (no interview channel)
 
 ## 🎯 Advanced Usage
 
 ### Custom Messages
 
-Edit messages in `auth_handler.py`:
+Edit messages in `config.py`:
+
+```python
+# Post-acceptance message with server invite
+if SERVER_INVITE_LINK:
+    AUTH_SUCCESS_MESSAGE = (
+        f"✅ **Authentication successful!** Make sure to join VC {SERVER_INVITE_LINK}"
+    )
+```
+
+Or edit `auth_handler.py` for full customization:
 
 ```python
 AUTH_REQUEST_MESSAGE = """
@@ -396,12 +381,6 @@ AUTH_REQUEST_MESSAGE = """
 Your custom instructions here...
 
 **Link:** {AUTH_LINK}
-"""
-
-AUTO_ACCEPT_MESSAGE = """
-✅ **Custom Welcome**
-
-Welcome to our server!
 """
 ```
 
@@ -413,13 +392,6 @@ In `meow_with_auth.py`:
 USE_AUTH_HANDLER = True   # Auth enabled
 USE_AUTH_HANDLER = False  # Auth disabled (regular meow.py behavior)
 ```
-
-### Multiple Auth Methods
-
-You can use multiple auth methods simultaneously:
-- Set both `AUTH_LINK` and `RESTORECORD_URL`
-- Users verified via either method will be authorized
-- The bot checks both local list and RestoreCord
 
 ## 🆘 Support
 
@@ -439,17 +411,13 @@ This is a private tool for Discord server management. Use responsibly and in acc
 
 - [ ] Install dependencies (`pip install requests`)
 - [ ] Edit `config.py` with your Discord token and server IDs
-- [ ] Set up authentication method in `config.py` (OAuth2/RestoreCord/Custom)
+- [ ] Configure RestoreCord in `config.py` (REQUIRED: URL and SERVER_ID)
+- [ ] Set SERVER_INVITE_LINK in `config.py` (optional but recommended)
 - [ ] (Optional) Configure message forwarding in `config.py`
 - [ ] (Optional) Set additional text for forwards in `config.py`
 - [ ] Start the bot (`python meow_with_auth.py`)
 - [ ] Test with your own user ID
-- [ ] Add authorized users as needed (`python auth_manager.py`)
 - [ ] Monitor logs and adjust settings in `config.py`
-- [ ] Start the bot (`python meow_with_auth.py`)
-- [ ] Test with your own user ID
-- [ ] Add authorized users as needed
-- [ ] Monitor logs and adjust settings
 
 ---
 
