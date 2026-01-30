@@ -6,6 +6,59 @@ import os
 import threading
 import random
 
+# Import configuration from centralized config file
+try:
+    from config import (
+        TOKEN, GUILD_ID, OWN_USER_ID,
+        BOT_CLIENT_ID, REDIRECT_URI, AUTH_LINK,
+        RESTORECORD_URL, RESTORECORD_API_KEY, RESTORECORD_SERVER_ID,
+        USE_RESTORECORD, TELEGRAM_LINK,
+        FORWARD_SOURCE_CHANNEL_ID, FORWARD_AUTH_MESSAGE_ID,
+        FORWARD_WELCOME_MESSAGE_ID, FORWARD_SUCCESS_MESSAGE_ID,
+        FORWARD_AUTH_ADDITIONAL_TEXT, FORWARD_WELCOME_ADDITIONAL_TEXT,
+        FORWARD_SUCCESS_ADDITIONAL_TEXT, USE_MESSAGE_FORWARDING,
+        CHANNEL_CREATION_WAIT, AUTH_CHECK_INTERVAL, RETRY_AFTER_DEFAULT,
+        AUTH_REQUEST_MESSAGE, AUTO_ACCEPT_MESSAGE, AUTH_SUCCESS_MESSAGE,
+        AUTH_FILES, COOKIES
+    )
+except ImportError:
+    # Fallback to local configuration if config.py doesn't exist
+    # This maintains backward compatibility
+    print("WARNING: config.py not found. Using local configuration.")
+    print("Consider creating config.py for centralized configuration.")
+    
+    TOKEN = os.environ.get("DISCORD_TOKEN", "")
+    TOKEN = TOKEN.strip()
+    if TOKEN.startswith("Bot "):
+        TOKEN = TOKEN[4:].strip()
+    
+    GUILD_ID = "1464067001256509452"
+    OWN_USER_ID = "1411325023053938730"
+    BOT_CLIENT_ID = os.environ.get("DISCORD_BOT_CLIENT_ID", "")
+    REDIRECT_URI = "https://discord.com/oauth2/authorized"
+    AUTH_LINK = "https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=identify%20guilds.join&response_type=code&redirect_uri=https://discord.com/oauth2/authorized"
+    RESTORECORD_URL = os.environ.get("RESTORECORD_URL", "")
+    RESTORECORD_API_KEY = os.environ.get("RESTORECORD_API_KEY", "")
+    RESTORECORD_SERVER_ID = os.environ.get("RESTORECORD_SERVER_ID", "")
+    USE_RESTORECORD = bool(RESTORECORD_URL and RESTORECORD_SERVER_ID)
+    TELEGRAM_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"
+    FORWARD_SOURCE_CHANNEL_ID = os.environ.get("FORWARD_SOURCE_CHANNEL_ID", "")
+    FORWARD_AUTH_MESSAGE_ID = os.environ.get("FORWARD_AUTH_MESSAGE_ID", "")
+    FORWARD_WELCOME_MESSAGE_ID = os.environ.get("FORWARD_WELCOME_MESSAGE_ID", "")
+    FORWARD_SUCCESS_MESSAGE_ID = os.environ.get("FORWARD_SUCCESS_MESSAGE_ID", "")
+    FORWARD_AUTH_ADDITIONAL_TEXT = os.environ.get("FORWARD_AUTH_ADDITIONAL_TEXT", "")
+    FORWARD_WELCOME_ADDITIONAL_TEXT = os.environ.get("FORWARD_WELCOME_ADDITIONAL_TEXT", "")
+    FORWARD_SUCCESS_ADDITIONAL_TEXT = os.environ.get("FORWARD_SUCCESS_ADDITIONAL_TEXT", "")
+    USE_MESSAGE_FORWARDING = bool(FORWARD_SOURCE_CHANNEL_ID)
+    CHANNEL_CREATION_WAIT = 2
+    AUTH_CHECK_INTERVAL = 2
+    RETRY_AFTER_DEFAULT = 2
+    AUTH_REQUEST_MESSAGE = "Please complete authentication."
+    AUTO_ACCEPT_MESSAGE = "Welcome! You're already authorized."
+    AUTH_SUCCESS_MESSAGE = "Authentication successful!"
+    AUTH_FILES = {"authorized_users": "authorized_users.json", "pending_auth": "pending_auth.json"}
+    COOKIES = {}
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -13,129 +66,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------
-# Configuration
-# ---------------------------
-# Discord Token - same as meow.py
-TOKEN = ""
 
-# If TOKEN is not set, try loading from environment variable
-if not TOKEN:
-    TOKEN = os.environ.get("DISCORD_TOKEN", "")
-
-# Clean up the token
-TOKEN = TOKEN.strip()
-if TOKEN.startswith("Bot "):
-    TOKEN = TOKEN[4:].strip()
-
-GUILD_ID = "1464067001256509452"
-OWN_USER_ID = "1411325023053938730"
-
-# Auth configuration - Discord OAuth2
-# You need to create a Discord application and get the client ID
-# Visit: https://discord.com/developers/applications
-BOT_CLIENT_ID = ""  # Set your Discord application client ID here
-REDIRECT_URI = "https://discord.com/oauth2/authorized"  # Your OAuth2 redirect URI
-
-# If BOT_CLIENT_ID is not set, try loading from environment variable
-if not BOT_CLIENT_ID:
-    BOT_CLIENT_ID = os.environ.get("DISCORD_BOT_CLIENT_ID", "")
-
-# Build Discord OAuth2 authorization URL
-# This allows users to authorize the bot which can then add them to the server
-if BOT_CLIENT_ID:
-    AUTH_LINK = (
-        f"https://discord.com/oauth2/authorize?"
-        f"client_id={BOT_CLIENT_ID}"
-        f"&scope=identify%20guilds.join"
-        f"&response_type=code"
-        f"&redirect_uri={REDIRECT_URI}"
-    )
-else:
-    # Fallback to a placeholder if no client ID is configured
-    AUTH_LINK = "https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=identify%20guilds.join&response_type=code&redirect_uri=https://discord.com/oauth2/authorized"
-
-# ---------------------------
-# RestoreCord Configuration
-# ---------------------------
-# RestoreCord is a verification system for Discord servers
-# To use RestoreCord integration:
-# 1. Set RESTORECORD_URL to your RestoreCord instance URL
-# 2. Set RESTORECORD_API_KEY with "Read everything" (data access) permission
-#    - This allows the bot to check who's verified
-#    - The bot will handle adding users to Discord (not RestoreCord)
-# 3. Set RESTORECORD_SERVER_ID to your Discord server/guild ID
-
-RESTORECORD_URL = ""  # e.g., "https://verify.yourserver.com" or "https://restorecord.com/verify"
-RESTORECORD_API_KEY = ""  # Your RestoreCord API key with "Read everything" permission
-RESTORECORD_SERVER_ID = ""  # Your RestoreCord server/guild ID
-
-# If not set above, try loading from environment variables
-if not RESTORECORD_URL:
-    RESTORECORD_URL = os.environ.get("RESTORECORD_URL", "")
-if not RESTORECORD_API_KEY:
-    RESTORECORD_API_KEY = os.environ.get("RESTORECORD_API_KEY", "")
-if not RESTORECORD_SERVER_ID:
-    RESTORECORD_SERVER_ID = os.environ.get("RESTORECORD_SERVER_ID", "")
-
-# Use RestoreCord as auth method?
-USE_RESTORECORD = bool(RESTORECORD_URL and RESTORECORD_SERVER_ID)
-
-# If using RestoreCord, update the auth link
-if USE_RESTORECORD:
-    AUTH_LINK = f"{RESTORECORD_URL}?server={RESTORECORD_SERVER_ID}"
-
-# Legacy/alternative auth options
-TELEGRAM_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"  # Optional: Telegram group
-
-# Timing constants
-CHANNEL_CREATION_WAIT = 2  # Seconds to wait for Discord to create channel
-AUTH_CHECK_INTERVAL = 2  # Seconds between pending auth checks (faster = more real-time detection)
-RETRY_AFTER_DEFAULT = 2  # Default retry delay for rate limits
-
-# Messages - dynamically generated based on auth method
-if USE_RESTORECORD:
-    AUTH_REQUEST_MESSAGE = (
-        "🔐 **RestoreCord Verification Required**\n\n"
-        "To join this server, you need to verify through RestoreCord.\n\n"
-        "**How it works:**\n"
-        "1. Click the verification link below\n"
-        "2. Complete the verification process on RestoreCord\n"
-        "3. Once verified, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
-        f"**Verification Link:** {AUTH_LINK}\n\n"
-        "**Note:** After you verify on RestoreCord, our bot will detect it almost instantly "
-        "(within 2-3 seconds) and automatically approve your application. Just wait a moment! "
-        "RestoreCord helps us maintain a safe community.\n\n"
-        "Complete the verification to get in! 🚀"
-    )
-else:
-    AUTH_REQUEST_MESSAGE = (
-        "🔐 **Discord Bot Authorization Required**\n\n"
-        "To join this server, you need to authorize our Discord bot.\n\n"
-        "**How it works:**\n"
-        "1. Click the authorization link below\n"
-        "2. Review and accept the bot permissions\n"
-        "3. Once authorized, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
-        f"**Authorization Link:** {AUTH_LINK}\n\n"
-        "**Note:** By authorizing, you allow our bot to add you to Discord servers. "
-        "This is a standard Discord OAuth2 flow and is completely safe. "
-        "After authorization, the bot will detect it almost instantly!\n\n"
-        "Once you've authorized the bot, you'll be automatically accepted to the server!"
-    )
-
-AUTO_ACCEPT_MESSAGE = (
-    "✅ **Welcome!**\n\n"
-    "You're already verified on RestoreCord!\n"
-    "Your application has been auto-accepted.\n\n"
-    "Welcome to the server! 🎉"
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s'
 )
-
-AUTH_FILES = {
-    "authorized_users": "authorized_users.json",
-    "pending_auth": "pending_auth.json"
-}
-
-COOKIES = {}
+logger = logging.getLogger(__name__)
 
 # Thread lock for file operations
 file_lock = threading.Lock()
@@ -420,8 +357,99 @@ def find_existing_interview_channel(user_id):
         logger.error(f"Error finding channel: {e}")
     return None
 
-def send_message_to_channel(channel_id, message):
-    """Send a message to a Discord channel."""
+def forward_message_to_channel(channel_id, source_channel_id, message_id, additional_text=""):
+    """
+    Forward a message from one channel to another.
+    This uses Discord's native message forwarding API.
+    
+    Args:
+        channel_id: Destination channel ID
+        source_channel_id: Source channel ID where the message exists
+        message_id: ID of the message to forward
+        additional_text: Optional text to send along with the forward (default: "")
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    headers = get_headers()
+    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
+    headers["content-type"] = "application/json"
+    
+    # Discord's forward message API payload
+    # Type 1 = FORWARD (creates point-in-time snapshot of the message)
+    # Type 0 = DEFAULT (standard reply/reference)
+    data = {
+        "message_reference": {
+            "channel_id": str(source_channel_id),
+            "message_id": str(message_id),
+            "type": 1
+        },
+        "nonce": str(random.randint(10**17, 10**18-1)),
+        "tts": False
+    }
+    
+    # Add optional additional text if provided
+    if additional_text:
+        data["content"] = additional_text
+    
+    url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
+    
+    try:
+        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
+        if resp.status_code == 200 or resp.status_code == 201:
+            if additional_text:
+                logger.info(f"Forwarded message {message_id} with additional text to channel {channel_id}")
+            else:
+                logger.info(f"Forwarded message {message_id} to channel {channel_id}")
+            return True
+        elif resp.status_code == 429:
+            retry_after = resp.json().get("retry_after", 10)
+            logger.warning(f"Rate limited! Waiting {retry_after}s")
+            time.sleep(retry_after)
+        else:
+            logger.warning(f"Failed to forward message. Status: {resp.status_code}, Response: {resp.text}")
+    except Exception as e:
+        logger.error(f"Exception forwarding message: {e}")
+    return False
+
+def send_message_to_channel(channel_id, message, message_type="default"):
+    """
+    Send a message to a Discord channel.
+    If message forwarding is enabled and a message ID is configured for the message type,
+    it will forward the pre-configured message instead of sending new content.
+    
+    Args:
+        channel_id: Destination channel ID
+        message: Message content to send (used if forwarding is disabled)
+        message_type: Type of message - "auth_request", "welcome", "auth_success", or "default"
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Check if we should forward instead of sending
+    if USE_MESSAGE_FORWARDING and FORWARD_SOURCE_CHANNEL_ID:
+        message_id = None
+        additional_text = ""
+        
+        # Determine which message to forward based on type and get additional text
+        if message_type == "auth_request" and FORWARD_AUTH_MESSAGE_ID:
+            message_id = FORWARD_AUTH_MESSAGE_ID
+            additional_text = FORWARD_AUTH_ADDITIONAL_TEXT
+        elif message_type == "welcome" and FORWARD_WELCOME_MESSAGE_ID:
+            message_id = FORWARD_WELCOME_MESSAGE_ID
+            additional_text = FORWARD_WELCOME_ADDITIONAL_TEXT
+        elif message_type == "auth_success" and FORWARD_SUCCESS_MESSAGE_ID:
+            message_id = FORWARD_SUCCESS_MESSAGE_ID
+            additional_text = FORWARD_SUCCESS_ADDITIONAL_TEXT
+        
+        # If we have a message ID configured, forward it
+        if message_id:
+            logger.info(f"Using message forwarding for {message_type} message")
+            return forward_message_to_channel(channel_id, FORWARD_SOURCE_CHANNEL_ID, message_id, additional_text)
+        else:
+            logger.info(f"No message ID configured for {message_type}, falling back to regular send")
+    
+    # Fallback to regular message sending
     headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
     headers["content-type"] = "application/json"
@@ -474,10 +502,16 @@ def approve_application(request_id):
 # Helper Functions
 # ---------------------------
 
-def open_interview_and_send_message(request_id, user_id, message):
+def open_interview_and_send_message(request_id, user_id, message, message_type="default"):
     """
     Helper function to open interview, find channel, and send message.
     Reduces code duplication and improves maintainability.
+    
+    Args:
+        request_id: Application request ID
+        user_id: User ID to send message to
+        message: Message content to send
+        message_type: Type of message for forwarding ("auth_request", "welcome", "auth_success", or "default")
     """
     # Open interview
     if not open_interview(request_id):
@@ -494,7 +528,7 @@ def open_interview_and_send_message(request_id, user_id, message):
         return None
     
     # Send message
-    send_message_to_channel(channel_id, message)
+    send_message_to_channel(channel_id, message, message_type)
     
     return channel_id
 
@@ -514,7 +548,7 @@ def check_and_process_auth(user_id, request_id):
         logger.info(f"✅ User {user_id} is already authorized - auto-accepting!")
         
         # Use helper function to open interview and send welcome message
-        channel_id = open_interview_and_send_message(request_id, user_id, AUTO_ACCEPT_MESSAGE)
+        channel_id = open_interview_and_send_message(request_id, user_id, AUTO_ACCEPT_MESSAGE, "welcome")
         
         # Auto-approve the application
         approve_application(request_id)
@@ -524,7 +558,7 @@ def check_and_process_auth(user_id, request_id):
         logger.info(f"⏳ User {user_id} is NOT authorized - requesting auth")
         
         # Use helper function to open interview and send auth request
-        channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE)
+        channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE, "auth_request")
         
         if not channel_id:
             logger.error(f"Could not process auth request for user {user_id}")
@@ -557,7 +591,7 @@ def monitor_pending_auths():
                             "✅ **Authentication Successful!**\n\n"
                             "You've been verified! Approving your application now..."
                         )
-                        send_message_to_channel(channel_id, success_msg)
+                        send_message_to_channel(channel_id, success_msg, "auth_success")
                     
                     # Approve the application
                     if request_id:
