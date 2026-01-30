@@ -2,6 +2,29 @@
 
 A Discord bot that automatically processes server join applications with an authentication system. Pre-authorized users are instantly accepted, while new users must complete authentication before being admitted.
 
+## 📚 Quick Summary - How It Works
+
+**In 30 seconds:**
+
+1. Someone applies to join your Discord server
+2. Bot checks: "Are they authorized?"
+   - ✅ **YES** → Forwards welcome message → Auto-approves them instantly
+   - ❌ **NO** → Forwards auth request → They authenticate → Forwards success message → Auto-approves them
+
+**Message Forwarding Explained:**
+
+Instead of typing new messages each time, the bot **forwards pre-made template messages** from your "secret server":
+
+- **FORWARD_AUTH_MESSAGE_ID** = Template asking users to verify (e.g., "Click this link")
+- **FORWARD_WELCOME_MESSAGE_ID** = Template welcoming pre-approved users (e.g., "You're verified!")
+- **FORWARD_SUCCESS_MESSAGE_ID** = Template confirming verification worked (e.g., "Success!")
+
+**Why forwarding?** Consistent formatting, easy updates, professional appearance, no bot restart needed to change messages.
+
+📖 **For detailed explanation, see [HOW_IT_WORKS.md](HOW_IT_WORKS.md)**
+
+---
+
 ## 🌟 Features
 
 - **Auto-Accept for Authorized Users**: Users in the authorization list are automatically approved

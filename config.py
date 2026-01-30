@@ -90,22 +90,61 @@ TELEGRAM_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"
 # MESSAGE FORWARDING CONFIGURATION
 # =============================================================================
 
-# Forward pre-existing messages from a "secret server" instead of sending new ones
-# Set FORWARD_SOURCE_CHANNEL_ID to enable forwarding
+# Instead of sending NEW messages, the bot can FORWARD pre-made template messages
+# from a "secret server" channel. This ensures consistent, professional messaging.
+#
+# HOW IT WORKS:
+# 1. Create a Discord server with a channel containing your template messages
+# 2. Copy the channel ID and message IDs (enable Developer Mode in Discord)
+# 3. Set them below - bot will forward these templates instead of typing new messages
+#
+# WHY USE FORWARDING:
+# - Consistent formatting across all messages
+# - Easy to update (edit template once, affects all future forwards)
+# - Professional appearance with rich formatting
+# - No need to restart bot to change message content
+#
+# See HOW_IT_WORKS.md for detailed setup guide and explanation
 
 # Secret server channel where template messages exist
-FORWARD_SOURCE_CHANNEL_ID = ""
+FORWARD_SOURCE_CHANNEL_ID = ""  # e.g., "123456789012345678"
 
+# -------------------------------------------------------------------------
 # Message IDs to forward for different scenarios
-FORWARD_AUTH_MESSAGE_ID = ""      # Auth request message
-FORWARD_WELCOME_MESSAGE_ID = ""   # Welcome/auto-accept message
-FORWARD_SUCCESS_MESSAGE_ID = ""   # Auth success message
+# -------------------------------------------------------------------------
 
+# FORWARD_AUTH_MESSAGE_ID - Auth Request Message
+# When used: When a NEW user applies and needs to authenticate
+# What it does: Forwards your template asking them to verify (e.g., "Click this link")
+# Example template: "🔐 Verification Required - Click here: [link]"
+FORWARD_AUTH_MESSAGE_ID = ""  # e.g., "111111111111111111"
+
+# FORWARD_WELCOME_MESSAGE_ID - Welcome Message
+# When used: When a user applies and is ALREADY authorized
+# What it does: Forwards your template welcoming them to the server
+# Example template: "✅ Welcome! You're already verified. Enjoy the server!"
+FORWARD_WELCOME_MESSAGE_ID = ""  # e.g., "222222222222222222"
+
+# FORWARD_SUCCESS_MESSAGE_ID - Success Message
+# When used: After a user completes authentication (right before approval)
+# What it does: Forwards your template confirming their verification worked
+# Example template: "✅ Authentication successful! Approving you now..."
+FORWARD_SUCCESS_MESSAGE_ID = ""  # e.g., "333333333333333333"
+
+# -------------------------------------------------------------------------
 # Optional: Add custom text along with forwarded messages
-# Set to empty string ("") to disable additional text
-FORWARD_AUTH_ADDITIONAL_TEXT = ""      # Extra text with auth forward
-FORWARD_WELCOME_ADDITIONAL_TEXT = ""   # Extra text with welcome forward
-FORWARD_SUCCESS_ADDITIONAL_TEXT = ""   # Extra text with success forward
+# -------------------------------------------------------------------------
+
+# Additional text is sent ALONG WITH the forward. Useful for:
+# - Adding current announcements without changing templates
+# - Personalizing messages
+# - Adding temporary information
+#
+# Set to empty string ("") to disable additional text for that message type
+
+FORWARD_AUTH_ADDITIONAL_TEXT = ""      # e.g., "Check your DMs for updates!"
+FORWARD_WELCOME_ADDITIONAL_TEXT = ""   # e.g., "Welcome to our community! 🎉"
+FORWARD_SUCCESS_ADDITIONAL_TEXT = ""   # Usually left empty
 
 # Load from environment variables
 if not FORWARD_SOURCE_CHANNEL_ID:
