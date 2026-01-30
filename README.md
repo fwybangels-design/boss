@@ -8,6 +8,8 @@ A Discord bot that automatically processes server join applications with an auth
 - **Auth Request for New Users**: Non-authorized users receive an authentication link
 - **Real-time Monitoring**: Automatically approves users once they complete authentication (2-3 seconds)
 - **Message Forwarding**: Forward pre-existing messages from a "secret server" instead of sending new ones
+- **Optional Additional Text**: Add custom text along with forwarded messages
+- **Centralized Configuration**: Single `config.py` file for all settings
 - **RestoreCord Integration**: Support for RestoreCord verification system
 - **CLI Management Tool**: Easy command-line interface for managing authorized users
 - **File-Based Storage**: Simple JSON files for managing users
@@ -20,44 +22,40 @@ A Discord bot that automatically processes server join applications with an auth
 pip install requests>=2.25.0
 ```
 
-### 2. Configure Your Token
+### 2. Configure Settings
 
-Edit `auth_handler.py` and add your Discord token:
+**All configuration is done in `config.py`** - a single file that contains all settings for all bots.
+
+Edit `config.py` and set your values:
 
 ```python
+# Discord credentials
 TOKEN = "your_discord_user_token_here"
+GUILD_ID = "your_server_id"
+OWN_USER_ID = "your_user_id"
+
+# Choose your authentication method
+BOT_CLIENT_ID = "your_discord_app_client_id"  # For Discord OAuth2
+# OR
+RESTORECORD_URL = "https://verify.yourserver.com"  # For RestoreCord
+RESTORECORD_SERVER_ID = "your_server_id"
+# OR
+AUTH_LINK = "https://t.me/addlist/your_telegram_group"  # For Telegram/other
 ```
 
-Or use environment variable:
+**Alternatively, use environment variables** (more secure):
 ```bash
 export DISCORD_TOKEN="your_token"
+export DISCORD_BOT_CLIENT_ID="your_client_id"
+export RESTORECORD_URL="https://verify.yourserver.com"
+# etc.
 ```
 
-### 3. Configure Authentication Method
+### 3. (Optional) Configure Message Forwarding
 
-Choose one of these options:
+Instead of sending new messages, you can forward pre-existing messages from a "secret server".
 
-**Option A: Discord OAuth2 (Default)**
-```python
-BOT_CLIENT_ID = "your_discord_app_client_id"
-AUTH_LINK = "https://discord.com/oauth2/authorize?client_id=..."
-```
-
-**Option B: RestoreCord**
-```python
-RESTORECORD_URL = "https://verify.yourserver.com"
-RESTORECORD_SERVER_ID = "your_server_id"
-RESTORECORD_API_KEY = "your_api_key"  # Optional: For auto-detection
-```
-
-**Option C: Telegram or Other**
-```python
-AUTH_LINK = "https://t.me/addlist/your_telegram_group"
-```
-
-### 4. (Optional) Configure Message Forwarding
-
-Instead of sending new messages, you can forward pre-existing messages from a "secret server":
+In `config.py`:
 
 ```python
 # Enable message forwarding
@@ -65,15 +63,21 @@ FORWARD_SOURCE_CHANNEL_ID = "123456789012345678"  # Channel ID in your secret se
 FORWARD_AUTH_MESSAGE_ID = "987654321098765432"    # Message ID for auth requests
 FORWARD_WELCOME_MESSAGE_ID = "111222333444555666" # Message ID for welcome messages
 FORWARD_SUCCESS_MESSAGE_ID = "222333444555666777" # Message ID for success messages
+
+# Optional: Add extra text along with the forwarded message
+FORWARD_AUTH_ADDITIONAL_TEXT = "Check your DMs for more info!"
+FORWARD_WELCOME_ADDITIONAL_TEXT = "Welcome to our server! 🎉"
+FORWARD_SUCCESS_ADDITIONAL_TEXT = ""  # Leave empty for no additional text
 ```
 
 **Setting up forwarding:**
 1. Create a "secret server" with a channel containing your template messages
-2. Copy the channel ID and message IDs
-3. Configure them in `auth_handler.py`
+2. Copy the channel ID and message IDs (Right-click → Copy ID with Developer Mode enabled)
+3. Configure them in `config.py`
 4. The bot will forward these messages instead of sending new ones
+5. Optionally set additional text to send along with each forward
 
-### 5. Start the Bot
+### 4. Start the Bot
 
 ```bash
 python meow_with_auth.py
@@ -123,12 +127,15 @@ Select options:
 
 ### With Message Forwarding:
 - Instead of sending new messages, the bot forwards pre-configured messages from your secret server
+- Optionally adds custom text along with the forward (e.g., "Welcome! Check your DMs")
 - This allows consistent formatting and keeps your templates in one place
 - Messages always come from the secret server, no matter which server runs the application
 
 ## 🔧 Configuration
 
-### Core Settings (in `auth_handler.py`)
+**All configuration is centralized in `config.py`** - edit this one file to configure everything!
+
+### Core Settings (in `config.py`)
 
 ```python
 # Discord credentials
@@ -147,6 +154,11 @@ FORWARD_AUTH_MESSAGE_ID = ""    # Auth request message
 FORWARD_WELCOME_MESSAGE_ID = "" # Welcome message
 FORWARD_SUCCESS_MESSAGE_ID = "" # Success message
 
+# Optional additional text with forwards
+FORWARD_AUTH_ADDITIONAL_TEXT = ""     # Extra text with auth forward
+FORWARD_WELCOME_ADDITIONAL_TEXT = ""  # Extra text with welcome forward
+FORWARD_SUCCESS_ADDITIONAL_TEXT = ""  # Extra text with success forward
+
 # Timing
 CHANNEL_CREATION_WAIT = 2     # Wait for Discord to create channel
 AUTH_CHECK_INTERVAL = 2       # How often to check for new auths (seconds)
@@ -154,7 +166,7 @@ AUTH_CHECK_INTERVAL = 2       # How often to check for new auths (seconds)
 
 ### Environment Variables
 
-For better security, use environment variables:
+For better security, use environment variables (config.py will automatically load these):
 
 ```bash
 export DISCORD_TOKEN="your_token"
@@ -166,6 +178,9 @@ export FORWARD_SOURCE_CHANNEL_ID="channel_id"
 export FORWARD_AUTH_MESSAGE_ID="message_id"
 export FORWARD_WELCOME_MESSAGE_ID="message_id"
 export FORWARD_SUCCESS_MESSAGE_ID="message_id"
+export FORWARD_AUTH_ADDITIONAL_TEXT="Check your DMs!"
+export FORWARD_WELCOME_ADDITIONAL_TEXT="Welcome! 🎉"
+export FORWARD_SUCCESS_ADDITIONAL_TEXT=""
 ```
 
 ## 📱 Usage Examples
@@ -268,11 +283,19 @@ RestoreCord is a verification system for Discord servers. The bot can automatica
 
 ```
 .
+├── config.py                # 🔧 Central configuration file (EDIT THIS!)
 ├── auth_handler.py          # Core authentication system
 ├── meow_with_auth.py        # Bot with auth integration
 ├── auth_manager.py          # CLI management tool
 ├── requirements.txt         # Python dependencies
-├── README.md               # This file
+├── README.md                # This file
+├── .gitignore               # Git ignore rules
+│
+├── authorized_users.json    # Authorized users list (auto-created)
+└── pending_auth.json        # Pending auth requests (auto-created)
+```
+
+**Important:** All configuration is done in `config.py` - this one file controls all bots!
 ├── .gitignore              # Git ignore rules
 │
 ├── authorized_users.json   # Authorized users list (auto-created)
@@ -392,9 +415,14 @@ This is a private tool for Discord server management. Use responsibly and in acc
 ## 🎉 Getting Started Checklist
 
 - [ ] Install dependencies (`pip install requests`)
-- [ ] Configure Discord token
-- [ ] Set up authentication method (OAuth2/RestoreCord/Custom)
-- [ ] (Optional) Configure message forwarding
+- [ ] Edit `config.py` with your Discord token and server IDs
+- [ ] Set up authentication method in `config.py` (OAuth2/RestoreCord/Custom)
+- [ ] (Optional) Configure message forwarding in `config.py`
+- [ ] (Optional) Set additional text for forwards in `config.py`
+- [ ] Start the bot (`python meow_with_auth.py`)
+- [ ] Test with your own user ID
+- [ ] Add authorized users as needed (`python auth_manager.py`)
+- [ ] Monitor logs and adjust settings in `config.py`
 - [ ] Start the bot (`python meow_with_auth.py`)
 - [ ] Test with your own user ID
 - [ ] Add authorized users as needed
