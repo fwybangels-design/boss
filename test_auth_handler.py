@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 Simple test script to verify auth_handler functionality
+
+NOTE: This bot now uses RestoreCord API for authorization.
+Tests focus on pending auth functionality and RestoreCord integration.
 """
 
 import os
@@ -12,12 +15,11 @@ print("Testing imports...")
 try:
     from auth_handler import (
         is_user_authorized,
-        add_authorized_user,
-        remove_authorized_user,
-        list_authorized_users,
         add_pending_auth,
         get_pending_auth_users,
         remove_pending_auth,
+        check_restorecord_verification,
+        USE_RESTORECORD,
         AUTH_FILES
     )
     print("✅ All imports successful")
@@ -31,60 +33,25 @@ def cleanup_test_files():
         if os.path.exists(filename):
             os.remove(filename)
 
-# Test 1: Add and check authorized user
+# Test 1: Check RestoreCord configuration
 print("\n" + "="*60)
-print("Test 1: Add and check authorized user")
+print("Test 1: RestoreCord Configuration")
+print("="*60)
+
+if USE_RESTORECORD:
+    print("✅ RestoreCord is configured")
+    print("   Authorization checks will use RestoreCord API")
+else:
+    print("⚠️  RestoreCord is NOT configured")
+    print("   Configure RESTORECORD_URL and RESTORECORD_SERVER_ID in config.py")
+    print("   Skipping authorization tests...")
+
+# Test 2: Pending auth functionality
+print("\n" + "="*60)
+print("Test 2: Pending auth functionality")
 print("="*60)
 
 cleanup_test_files()
-
-test_user_id = "123456789"
-test_username = "test_user"
-
-# Add user
-result = add_authorized_user(test_user_id, test_username)
-if result:
-    print(f"✅ Successfully added user {test_user_id}")
-else:
-    print(f"❌ Failed to add user {test_user_id}")
-    sys.exit(1)
-
-# Check if authorized
-if is_user_authorized(test_user_id):
-    print(f"✅ User {test_user_id} is authorized")
-else:
-    print(f"❌ User {test_user_id} is NOT authorized (should be)")
-    sys.exit(1)
-
-# Check unauthorized user
-if not is_user_authorized("999999999"):
-    print(f"✅ Unauthorized user correctly identified")
-else:
-    print(f"❌ Unauthorized user incorrectly authorized")
-    sys.exit(1)
-
-# Test 2: List authorized users
-print("\n" + "="*60)
-print("Test 2: List authorized users")
-print("="*60)
-
-users = list_authorized_users()
-if test_user_id in users:
-    print(f"✅ User {test_user_id} found in authorized list")
-    data = users[test_user_id]
-    if data.get("username") == test_username:
-        print(f"✅ Username matches: {test_username}")
-    else:
-        print(f"❌ Username mismatch")
-        sys.exit(1)
-else:
-    print(f"❌ User {test_user_id} not found in list")
-    sys.exit(1)
-
-# Test 3: Pending auth
-print("\n" + "="*60)
-print("Test 3: Pending auth functionality")
-print("="*60)
 
 pending_user_id = "987654321"
 request_id = "req_test"
@@ -120,55 +87,57 @@ else:
     print(f"❌ Failed to remove from pending")
     sys.exit(1)
 
-# Test 4: Remove authorized user
+# Test 3: File persistence
 print("\n" + "="*60)
-print("Test 4: Remove authorized user")
+print("Test 3: File persistence")
 print("="*60)
 
-result = remove_authorized_user(test_user_id)
-if result:
-    print(f"✅ Successfully removed user {test_user_id}")
-else:
-    print(f"❌ Failed to remove user")
-    sys.exit(1)
-
-# Verify removal
-if not is_user_authorized(test_user_id):
-    print(f"✅ User {test_user_id} is no longer authorized")
-else:
-    print(f"❌ User {test_user_id} still authorized (should not be)")
-    sys.exit(1)
-
-# Test 5: File persistence
-print("\n" + "="*60)
-print("Test 5: File persistence")
-print("="*60)
-
-# Add multiple users
+# Add multiple pending users
 users_to_add = [
-    ("111111111", "user1"),
-    ("222222222", "user2"),
-    ("333333333", "user3")
+    ("111111111", "req1", "ch1"),
+    ("222222222", "req2", "ch2"),
+    ("333333333", "req3", "ch3")
 ]
 
-for uid, uname in users_to_add:
-    add_authorized_user(uid, uname)
+for uid, reqid, chid in users_to_add:
+    add_pending_auth(uid, reqid, chid)
 
 # Check file exists
-if os.path.exists(AUTH_FILES["authorized_users"]):
-    print(f"✅ Auth file created: {AUTH_FILES['authorized_users']}")
+if os.path.exists(AUTH_FILES["pending_auth"]):
+    print(f"✅ Pending auth file created: {AUTH_FILES['pending_auth']}")
 else:
-    print(f"❌ Auth file not found")
+    print(f"❌ Pending auth file not found")
     sys.exit(1)
 
 # Read and verify JSON
-with open(AUTH_FILES["authorized_users"], 'r') as f:
+with open(AUTH_FILES["pending_auth"], 'r') as f:
     data = json.load(f)
     if len(data) == 3:
-        print(f"✅ File contains {len(data)} users")
+        print(f"✅ File contains {len(data)} pending users")
     else:
         print(f"❌ Expected 3 users, found {len(data)}")
         sys.exit(1)
+
+# Test 4: RestoreCord API check (if configured)
+if USE_RESTORECORD:
+    print("\n" + "="*60)
+    print("Test 4: RestoreCord API Integration")
+    print("="*60)
+    
+    test_user = input("Enter a Discord User ID to test (or press Enter to skip): ").strip()
+    
+    if test_user:
+        print(f"\n🔍 Checking if user {test_user} is verified on RestoreCord...")
+        try:
+            is_verified = is_user_authorized(test_user)
+            if is_verified:
+                print(f"✅ User {test_user} IS authorized (verified on RestoreCord)")
+            else:
+                print(f"❌ User {test_user} is NOT authorized (not verified on RestoreCord)")
+        except Exception as e:
+            print(f"❌ Error testing RestoreCord: {e}")
+    else:
+        print("⏭️  Skipping RestoreCord API test")
 
 # Cleanup
 print("\n" + "="*60)
@@ -182,7 +151,11 @@ print("\n" + "="*60)
 print("🎉 ALL TESTS PASSED!")
 print("="*60)
 print("\nAuth handler is working correctly.")
-print("You can now use:")
+print("\nIMPORTANT NOTES:")
+print("  - Authorization is now via RestoreCord API (no local storage)")
+print("  - Users are verified in real-time by polling RestoreCord")
+print("  - No interview channel is opened for already verified users")
+print("\nYou can now use:")
 print("  - python meow_with_auth.py  (to run the bot)")
-print("  - python auth_manager.py    (to manage users)")
+print("  - python auth_manager.py    (to view pending auth requests)")
 print("  - python example_auth_usage.py  (to see examples)")

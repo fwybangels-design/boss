@@ -14,12 +14,10 @@ try:
         RESTORECORD_URL, RESTORECORD_API_KEY, RESTORECORD_SERVER_ID,
         USE_RESTORECORD, TELEGRAM_LINK,
         FORWARD_SOURCE_CHANNEL_ID, FORWARD_AUTH_MESSAGE_ID,
-        FORWARD_WELCOME_MESSAGE_ID, FORWARD_SUCCESS_MESSAGE_ID,
-        FORWARD_AUTH_ADDITIONAL_TEXT, FORWARD_WELCOME_ADDITIONAL_TEXT,
-        FORWARD_SUCCESS_ADDITIONAL_TEXT, USE_MESSAGE_FORWARDING,
+        FORWARD_AUTH_ADDITIONAL_TEXT, USE_MESSAGE_FORWARDING,
         CHANNEL_CREATION_WAIT, AUTH_CHECK_INTERVAL, RETRY_AFTER_DEFAULT,
-        AUTH_REQUEST_MESSAGE, AUTO_ACCEPT_MESSAGE, AUTH_SUCCESS_MESSAGE,
-        AUTH_FILES, COOKIES
+        AUTH_REQUEST_MESSAGE, AUTH_SUCCESS_MESSAGE,
+        AUTH_FILES, COOKIES, SERVER_INVITE_LINK
     )
 except ImportError:
     # Fallback to local configuration if config.py doesn't exist
@@ -44,20 +42,16 @@ except ImportError:
     TELEGRAM_LINK = "https://t.me/addlist/cS0b_-rSPsphZDVh"
     FORWARD_SOURCE_CHANNEL_ID = os.environ.get("FORWARD_SOURCE_CHANNEL_ID", "")
     FORWARD_AUTH_MESSAGE_ID = os.environ.get("FORWARD_AUTH_MESSAGE_ID", "")
-    FORWARD_WELCOME_MESSAGE_ID = os.environ.get("FORWARD_WELCOME_MESSAGE_ID", "")
-    FORWARD_SUCCESS_MESSAGE_ID = os.environ.get("FORWARD_SUCCESS_MESSAGE_ID", "")
     FORWARD_AUTH_ADDITIONAL_TEXT = os.environ.get("FORWARD_AUTH_ADDITIONAL_TEXT", "")
-    FORWARD_WELCOME_ADDITIONAL_TEXT = os.environ.get("FORWARD_WELCOME_ADDITIONAL_TEXT", "")
-    FORWARD_SUCCESS_ADDITIONAL_TEXT = os.environ.get("FORWARD_SUCCESS_ADDITIONAL_TEXT", "")
     USE_MESSAGE_FORWARDING = bool(FORWARD_SOURCE_CHANNEL_ID)
     CHANNEL_CREATION_WAIT = 2
     AUTH_CHECK_INTERVAL = 2
     RETRY_AFTER_DEFAULT = 2
     AUTH_REQUEST_MESSAGE = "Please complete authentication."
-    AUTO_ACCEPT_MESSAGE = "Welcome! You're already authorized."
     AUTH_SUCCESS_MESSAGE = "Authentication successful!"
-    AUTH_FILES = {"authorized_users": "authorized_users.json", "pending_auth": "pending_auth.json"}
+    AUTH_FILES = {"pending_auth": "pending_auth.json"}
     COOKIES = {}
+    SERVER_INVITE_LINK = os.environ.get("SERVER_INVITE_LINK", "")
 
 # Logging setup
 logging.basicConfig(
@@ -126,54 +120,23 @@ def save_json_file(filename, data):
 
 def is_user_authorized(user_id):
     """
-    Check if a user is in the authorized users list.
-    If RestoreCord is enabled, also check RestoreCord verification status.
+    Check if a user is authorized/verified.
+    Uses RestoreCord API polling to check verification status in real-time.
+    No local file storage - always checks the authoritative source.
     """
-    auth_users = load_json_file(AUTH_FILES["authorized_users"])
-    user_id_str = str(user_id)
-    
-    # Check local authorized list first
-    if user_id_str in auth_users:
-        return True
-    
-    # If RestoreCord is enabled, check verification status
+    # If RestoreCord is enabled, check verification status via API
     if USE_RESTORECORD:
         is_verified = check_restorecord_verification(user_id)
         if is_verified:
-            # Auto-add to local list for faster future checks
-            add_authorized_user(user_id, "RestoreCord_Verified")
-            logger.info(f"✅ User {user_id} verified on RestoreCord - auto-authorizing")
+            logger.info(f"✅ User {user_id} is verified on RestoreCord")
             return True
-    
-    return False
-
-def add_authorized_user(user_id, username=None):
-    """Add a user to the authorized users list."""
-    auth_users = load_json_file(AUTH_FILES["authorized_users"])
-    user_id_str = str(user_id)
-    
-    auth_users[user_id_str] = {
-        "username": username or "Unknown",
-        "authorized_at": time.time(),
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-    }
-    
-    if save_json_file(AUTH_FILES["authorized_users"], auth_users):
-        logger.info(f"Added user {user_id} to authorized list")
-        return True
-    return False
-
-def remove_authorized_user(user_id):
-    """Remove a user from the authorized users list."""
-    auth_users = load_json_file(AUTH_FILES["authorized_users"])
-    user_id_str = str(user_id)
-    
-    if user_id_str in auth_users:
-        del auth_users[user_id_str]
-        save_json_file(AUTH_FILES["authorized_users"], auth_users)
-        logger.info(f"Removed user {user_id} from authorized list")
-        return True
-    return False
+        else:
+            logger.info(f"❌ User {user_id} is NOT verified on RestoreCord")
+            return False
+    else:
+        # If RestoreCord is not configured, users are not authorized by default
+        logger.warning("RestoreCord is not configured - cannot verify users")
+        return False
 
 def add_pending_auth(user_id, request_id, channel_id):
     """Add a user to the pending auth list."""
@@ -269,50 +232,6 @@ def check_restorecord_verification(user_id):
     except Exception as e:
         logger.error(f"Error checking RestoreCord verification: {e}")
         return False
-
-def sync_restorecord_users():
-    """
-    Sync verified users from RestoreCord to local authorized users list.
-    This can be called periodically to auto-add verified users.
-    """
-    if not USE_RESTORECORD:
-        return
-    
-    try:
-        # Get all verified users from RestoreCord
-        api_url = f"{RESTORECORD_URL}/api/members"
-        params = {"server": RESTORECORD_SERVER_ID}
-        
-        headers = {}
-        if RESTORECORD_API_KEY:
-            headers["Authorization"] = f"Bearer {RESTORECORD_API_KEY}"
-        
-        resp = requests.get(api_url, params=params, headers=headers, timeout=30)
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            verified_users = []
-            
-            # Parse response based on common formats
-            if isinstance(data, list):
-                verified_users = [str(user.get("user_id") or user.get("id")) for user in data]
-            elif isinstance(data, dict) and "members" in data:
-                verified_users = [str(user.get("user_id") or user.get("id")) for user in data["members"]]
-            
-            # Add to authorized list
-            count = 0
-            for user_id in verified_users:
-                if user_id and not is_user_authorized(user_id):
-                    if add_authorized_user(user_id, "RestoreCord_Verified"):
-                        count += 1
-            
-            if count > 0:
-                logger.info(f"Synced {count} verified users from RestoreCord")
-        else:
-            logger.error(f"Failed to sync RestoreCord users: {resp.status_code}")
-            
-    except Exception as e:
-        logger.error(f"Error syncing RestoreCord users: {e}")
 
 # ---------------------------
 # Discord API Functions
@@ -415,37 +334,22 @@ def forward_message_to_channel(channel_id, source_channel_id, message_id, additi
 def send_message_to_channel(channel_id, message, message_type="default"):
     """
     Send a message to a Discord channel.
-    If message forwarding is enabled and a message ID is configured for the message type,
-    it will forward the pre-configured message instead of sending new content.
+    If message forwarding is enabled and message_type is "auth_request",
+    it will forward the pre-configured auth request message instead of sending new content.
     
     Args:
         channel_id: Destination channel ID
         message: Message content to send (used if forwarding is disabled)
-        message_type: Type of message - "auth_request", "welcome", "auth_success", or "default"
+        message_type: Type of message - "auth_request" or "default"
     
     Returns:
         bool: True if successful, False otherwise
     """
-    # Check if we should forward instead of sending
-    if USE_MESSAGE_FORWARDING and FORWARD_SOURCE_CHANNEL_ID:
-        message_id = None
-        additional_text = ""
-        
-        # Determine which message to forward based on type and get additional text
-        if message_type == "auth_request" and FORWARD_AUTH_MESSAGE_ID:
-            message_id = FORWARD_AUTH_MESSAGE_ID
-            additional_text = FORWARD_AUTH_ADDITIONAL_TEXT
-        elif message_type == "welcome" and FORWARD_WELCOME_MESSAGE_ID:
-            message_id = FORWARD_WELCOME_MESSAGE_ID
-            additional_text = FORWARD_WELCOME_ADDITIONAL_TEXT
-        elif message_type == "auth_success" and FORWARD_SUCCESS_MESSAGE_ID:
-            message_id = FORWARD_SUCCESS_MESSAGE_ID
-            additional_text = FORWARD_SUCCESS_ADDITIONAL_TEXT
-        
-        # If we have a message ID configured, forward it
-        if message_id:
+    # Check if we should forward instead of sending (only for auth_request)
+    if USE_MESSAGE_FORWARDING and FORWARD_SOURCE_CHANNEL_ID and message_type == "auth_request":
+        if FORWARD_AUTH_MESSAGE_ID:
             logger.info(f"Using message forwarding for {message_type} message")
-            return forward_message_to_channel(channel_id, FORWARD_SOURCE_CHANNEL_ID, message_id, additional_text)
+            return forward_message_to_channel(channel_id, FORWARD_SOURCE_CHANNEL_ID, FORWARD_AUTH_MESSAGE_ID, FORWARD_AUTH_ADDITIONAL_TEXT)
         else:
             logger.info(f"No message ID configured for {message_type}, falling back to regular send")
     
@@ -539,23 +443,26 @@ def open_interview_and_send_message(request_id, user_id, message, message_type="
 def check_and_process_auth(user_id, request_id):
     """
     Check if user is authorized and handle accordingly.
+    
+    NEW REQUIREMENT: Under no circumstance will the application bot open an application 
+    if the user is already verified. Already verified users are auto-approved immediately 
+    without any interview channel or messages.
+    
     Returns: (is_authorized, channel_id)
     """
     user_id_str = str(user_id)
     
-    # Check if user is already authorized
+    # Check if user is already authorized via RestoreCord API
     if is_user_authorized(user_id):
-        logger.info(f"✅ User {user_id} is already authorized - auto-accepting!")
+        logger.info(f"✅ User {user_id} is already verified - auto-approving WITHOUT opening interview!")
         
-        # Use helper function to open interview and send welcome message
-        channel_id = open_interview_and_send_message(request_id, user_id, AUTO_ACCEPT_MESSAGE, "welcome")
-        
-        # Auto-approve the application
+        # Do NOT open interview channel or send any messages
+        # Just auto-approve immediately
         approve_application(request_id)
         
-        return True, channel_id
+        return True, None
     else:
-        logger.info(f"⏳ User {user_id} is NOT authorized - requesting auth")
+        logger.info(f"⏳ User {user_id} is NOT verified - requesting auth")
         
         # Use helper function to open interview and send auth request
         channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE, "auth_request")
@@ -578,24 +485,20 @@ def monitor_pending_auths():
             pending = get_pending_auth_users()
             
             for user_id_str, data in list(pending.items()):
-                # Check if user is now authorized
+                # Check if user is now authorized via RestoreCord API
                 if is_user_authorized(user_id_str):
                     logger.info(f"✅ User {user_id_str} completed auth - auto-accepting!")
                     
                     request_id = data.get("request_id")
                     channel_id = data.get("channel_id")
                     
-                    # Send success message
-                    if channel_id:
-                        success_msg = (
-                            "✅ **Authentication Successful!**\n\n"
-                            "You've been verified! Approving your application now..."
-                        )
-                        send_message_to_channel(channel_id, success_msg, "auth_success")
-                    
-                    # Approve the application
+                    # Approve the application first
                     if request_id:
                         approve_application(request_id)
+                    
+                    # Send success message AFTER approval (not forwarded)
+                    if channel_id:
+                        send_message_to_channel(channel_id, AUTH_SUCCESS_MESSAGE, "default")
                     
                     # Remove from pending
                     remove_pending_auth(user_id_str)
@@ -604,27 +507,6 @@ def monitor_pending_auths():
         except Exception as e:
             logger.error(f"Error in auth monitor: {e}")
             time.sleep(AUTH_CHECK_INTERVAL)
-
-# ---------------------------
-# Manual Auth Management
-# ---------------------------
-
-def manually_authorize_user(user_id, username=None):
-    """Manually add a user to the authorized list (for testing/admin use)."""
-    return add_authorized_user(user_id, username)
-
-def manually_deauthorize_user(user_id):
-    """Manually remove a user from the authorized list."""
-    return remove_authorized_user(user_id)
-
-def list_authorized_users():
-    """List all authorized users."""
-    auth_users = load_json_file(AUTH_FILES["authorized_users"])
-    return auth_users
-
-def list_pending_auth_users():
-    """List all users pending authorization."""
-    return get_pending_auth_users()
 
 # ---------------------------
 # Integration Point

@@ -2,66 +2,61 @@
 
 ## Quick Summary
 
-This bot automatically processes Discord server join applications. When someone applies to join:
+This bot automatically processes Discord server join applications using RestoreCord verification. When someone applies to join:
 
-1. **If they're already authorized** → Bot forwards a welcome message → Auto-approves them ✅
-2. **If they're NOT authorized** → Bot forwards an auth request → They authenticate → Bot forwards success message → Auto-approves them ✅
+1. **If they're already verified on RestoreCord** → Bot auto-approves immediately (NO interview channel, NO messages) ✅
+2. **If they're NOT verified** → Bot forwards an auth request → They authenticate on RestoreCord → Bot auto-approves → Sends success message ✅
 
-## What Are The Forward Message IDs?
+## What Is Message Forwarding?
 
-### The Three Message Types
+Instead of typing out new messages each time, the bot can **forward a pre-made template message** from your "secret server" for auth requests. Success messages are simple text (not forwarded).
 
-The bot sends different messages at different stages. Instead of typing out new messages each time, it **forwards pre-made template messages** from your "secret server":
+### The Auth Request Message - FORWARD_AUTH_MESSAGE_ID
 
-#### 1. **FORWARD_AUTH_MESSAGE_ID** - Auth Request Message
 - **When it's used**: When a NEW user applies and needs to authenticate
-- **What it does**: Forwards your template that says "Hey, click this link to verify"
-- **Why it's needed**: Tells users how to get authorized
-- **Example**: "🔐 Click this link to verify: [link]"
+- **What it does**: Forwards your template that says "Hey, verify on RestoreCord"
+- **Why it's needed**: Tells users how to get verified
+- **Example**: "🔐 Click this link to verify: [RestoreCord link]"
+- **Additional text**: Optional extra text sent along with the forward
 
-#### 2. **FORWARD_WELCOME_MESSAGE_ID** - Welcome Message  
-- **When it's used**: When a user applies and is ALREADY authorized
-- **What it does**: Forwards your template that welcomes them
-- **Why it's needed**: Greets users who are pre-approved
-- **Example**: "✅ Welcome! You're already verified. Enjoy the server!"
+### Post-Acceptance Success Message
 
-#### 3. **FORWARD_SUCCESS_MESSAGE_ID** - Success Message
-- **When it's used**: After a user completes authentication
-- **What it does**: Forwards your template confirming their auth worked
-- **Why it's needed**: Lets users know they're being approved now
-- **Example**: "✅ Authentication successful! Approving you now..."
+- **When it's used**: After a user completes RestoreCord verification and is approved
+- **What it does**: Sends a simple success message (NOT forwarded)
+- **Why it's needed**: Confirms approval and provides server invite link
+- **Example**: "✅ Authentication successful! Make sure to join VC https://discord.gg/example"
 
 ## Why Use Forwarding Instead of Regular Messages?
 
 ### Without Forwarding (Old Way):
 ```
 Bot types: "🔐 Click this link to verify: https://..."
-Bot types: "✅ Welcome! You're already verified..."
-Bot types: "✅ Authentication successful!..."
 ```
-Every message is newly typed by the bot.
+Every auth request is newly typed by the bot.
 
 ### With Forwarding (New Way):
 ```
 Bot forwards message #123 from Secret Server
-Bot forwards message #456 from Secret Server  
-Bot forwards message #789 from Secret Server
+(with optional additional text)
 ```
-Messages are pre-made templates from your secret server.
+Auth request is a pre-made template from your secret server.
 
 ### Benefits:
-1. **Consistency**: All messages look the same (formatting, emojis, text)
+1. **Consistency**: All auth requests look the same (formatting, emojis, text)
 2. **Easy Updates**: Edit the template once in secret server, affects all future forwards
 3. **Professional**: Messages can have rich formatting, images, embeds
 4. **No Typos**: Set it once, forwards it perfectly every time
+5. **Additional Text**: Can add custom text along with the forward
+
+**Note:** Only auth request messages can be forwarded. Success messages are simple text sent after approval.
 
 ## Complete Flow Diagram
 
 ```
 User Applies to Join Server
          ↓
-    Bot Checks:
-    "Is user in authorized_users.json?"
+    Bot Checks RestoreCord API:
+    "Is user verified?"
          ↓
     ┌────┴────┐
    YES       NO
@@ -72,81 +67,58 @@ User Applies to Join Server
     │    (Optional: + FORWARD_AUTH_ADDITIONAL_TEXT)
     │         │
     │         ↓
-    │    User Clicks Link & Authenticates
-    │    (Joins Telegram, RestoreCord, etc.)
+    │    User Clicks Link & Authenticates on RestoreCord
     │         │
     │         ↓
-    │    Admin Adds User to Authorized List
-    │    OR RestoreCord Auto-Detects Verification
-    │         │
-    │         ↓
-    │    Bot Detects User is Now Authorized (checks every 2 seconds)
-    │    Bot Forwards SUCCESS MESSAGE ← FORWARD_SUCCESS_MESSAGE_ID
-    │    (Optional: + FORWARD_SUCCESS_ADDITIONAL_TEXT)
+    │    Bot Polls RestoreCord API (every 2 seconds)
+    │    Bot Detects User is Now Verified
     │         │
     ↓         ↓
-Bot Forwards WELCOME MESSAGE ← FORWARD_WELCOME_MESSAGE_ID
-(Optional: + FORWARD_WELCOME_ADDITIONAL_TEXT)
-    ↓
 Bot Auto-Approves Application
+(NO interview channel for already verified)
+    ↓
+Bot Sends SUCCESS MESSAGE (simple text, not forwarded)
+"✅ Authentication successful! Make sure to join VC [link]"
     ↓
 ✅ User Joins Server!
 ```
+
+**CRITICAL:** Already verified users get NO interview channel and NO messages - just instant approval.
 
 ## Setting Up Message Forwarding
 
 ### Step 1: Create Your Secret Server
 1. Create a private Discord server (or use existing one)
 2. Create a channel (e.g., #message-templates)
-3. This is your "secret server" where templates live
+3. This is your "secret server" where the auth request template lives
 
-### Step 2: Create Your Template Messages
-In your secret server channel, type and send these 3 messages:
+### Step 2: Create Your Auth Request Template Message
+In your secret server channel, type and send this message:
 
-**Message 1 - Auth Request:**
+**Auth Request Message:**
 ```
 🔐 **Verification Required**
 
 To join our server, please verify yourself:
-Click here: https://t.me/yourgroup
+Click here: https://restorecord.yourserver.com
 
 Once verified, you'll be auto-approved within seconds!
 ```
 
-**Message 2 - Welcome:**
-```
-✅ **Welcome!**
-
-You're already verified! 
-Your application has been auto-approved.
-
-Welcome to our community! 🎉
-```
-
-**Message 3 - Success:**
-```
-✅ **Authentication Successful!**
-
-You've been verified!
-Approving your application now...
-```
+**Important:** The message should contain your RestoreCord verification link.
 
 ### Step 3: Get The IDs
 1. Enable Developer Mode in Discord (Settings → Advanced → Developer Mode)
 2. Right-click the channel → Copy ID (this is your `FORWARD_SOURCE_CHANNEL_ID`)
-3. Right-click each message → Copy Message ID
+3. Right-click the auth request message → Copy Message ID (this is your `FORWARD_AUTH_MESSAGE_ID`)
 
 ### Step 4: Configure config.py
 ```python
 FORWARD_SOURCE_CHANNEL_ID = "123456789012345678"  # Your channel ID
 FORWARD_AUTH_MESSAGE_ID = "111111111111111111"    # Auth request message ID
-FORWARD_WELCOME_MESSAGE_ID = "222222222222222222" # Welcome message ID  
-FORWARD_SUCCESS_MESSAGE_ID = "333333333333333333" # Success message ID
 
 # Optional: Add extra text
-FORWARD_AUTH_ADDITIONAL_TEXT = "Check your DMs!"
-FORWARD_WELCOME_ADDITIONAL_TEXT = "Enjoy!"
-FORWARD_SUCCESS_ADDITIONAL_TEXT = ""  # Leave empty for none
+FORWARD_AUTH_ADDITIONAL_TEXT = "Please complete verification to join!"
 ```
 
 ### Step 5: Run The Bot
@@ -154,17 +126,17 @@ FORWARD_SUCCESS_ADDITIONAL_TEXT = ""  # Leave empty for none
 python meow_with_auth.py
 ```
 
-Now the bot will forward your template messages instead of typing new ones!
+Now the bot will forward your auth request template message instead of typing new ones!
 
-## Optional Additional Text
+### Optional Additional Text
 
 You can add extra text that gets sent **along with** the forwarded message:
 
 ```python
-FORWARD_WELCOME_ADDITIONAL_TEXT = "Also join our Discord event tonight!"
+FORWARD_AUTH_ADDITIONAL_TEXT = "Important: Complete verification within 24 hours!"
 ```
 
-When the bot forwards the welcome message, it will show:
+When the bot forwards the auth request, it will show:
 1. The forwarded message (your template)
 2. Your additional text below it
 
@@ -189,10 +161,16 @@ This is useful for:
 - Perfect consistency
 - Can use Discord's rich formatting, emojis, embeds
 
+### Additional Benefits:
+- **Instant Approval for Verified Users**: No interview channel = faster, cleaner process
+- **RestoreCord API Polling**: Always checks the authoritative source, no stale data
+- **No Local Storage**: No authorized_users.json to manage or sync
+- **Simple Success Messages**: Post-acceptance message is straightforward, not a forward
+
 ## Troubleshooting
 
 ### "No message ID configured, falling back to regular send"
-- You haven't set the message IDs in config.py
+- You haven't set FORWARD_AUTH_MESSAGE_ID in config.py
 - Bot will send regular text messages instead
 - This is fine if you don't want forwarding
 
@@ -204,27 +182,33 @@ This is useful for:
 ### Messages Not Forwarding
 - Check `USE_MESSAGE_FORWARDING` is True (auto-set if channel ID is provided)
 - Verify `FORWARD_SOURCE_CHANNEL_ID` is set
+- Verify `FORWARD_AUTH_MESSAGE_ID` is set
 - Check logs for specific error messages
+
+### Users Not Being Approved
+- Verify RestoreCord is properly configured (URL, SERVER_ID, API_KEY)
+- Check user is actually verified on RestoreCord
+- Check bot logs for RestoreCord API errors
 
 ## Quick Reference
 
 | Config Variable | What It Does | Example Value |
 |----------------|--------------|---------------|
-| `FORWARD_SOURCE_CHANNEL_ID` | Where templates are stored | `"123456789012345678"` |
+| `RESTORECORD_URL` | RestoreCord instance URL | `"https://verify.server.com"` |
+| `RESTORECORD_SERVER_ID` | Your server ID on RestoreCord | `"1234567890"` |
+| `SERVER_INVITE_LINK` | Server invite in success message | `"https://discord.gg/example"` |
+| `FORWARD_SOURCE_CHANNEL_ID` | Where auth template is stored | `"123456789012345678"` |
 | `FORWARD_AUTH_MESSAGE_ID` | Template for auth requests | `"111111111111111111"` |
-| `FORWARD_WELCOME_MESSAGE_ID` | Template for welcome | `"222222222222222222"` |
-| `FORWARD_SUCCESS_MESSAGE_ID` | Template for success | `"333333333333333333"` |
 | `FORWARD_AUTH_ADDITIONAL_TEXT` | Extra text with auth forward | `"Check DMs!"` or `""` |
-| `FORWARD_WELCOME_ADDITIONAL_TEXT` | Extra text with welcome | `"Enjoy!"` or `""` |
-| `FORWARD_SUCCESS_ADDITIONAL_TEXT` | Extra text with success | `""` (usually empty) |
 
 ## Summary
 
-**Forward Message IDs** tell the bot which pre-made template messages to forward at different stages of the application process. This makes your messages consistent, professional, and easy to update. You create templates once in a "secret server" and the bot forwards them instead of typing new messages each time.
+**Message forwarding** tells the bot to forward a pre-made auth request template instead of typing new messages each time. This makes auth requests consistent, professional, and easy to update. You create the template once in a "secret server" and the bot forwards it.
 
-**The three stages are:**
-1. **Auth Request** - When new users need to authenticate
-2. **Welcome** - When users are already authorized  
-3. **Success** - When authentication completes
+**Already verified users** get instant approval with NO interview channel and NO messages - completely silent and automatic.
 
-**Optional additional text** lets you add extra info with each forward without changing the template.
+**Post-acceptance success messages** are simple text (not forwarded) with an optional server invite link.
+
+**The flow is:**
+1. **Already verified on RestoreCord** - Instant approval (silent)
+2. **Not verified** - Forward auth request → User verifies on RestoreCord → Bot approves → Sends success message
