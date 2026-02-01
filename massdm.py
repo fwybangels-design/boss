@@ -377,7 +377,7 @@ async def mdm(ctx, *, message: str):
             except Exception:
                 pass
 
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
 
         # Build sender report (used vs skipped)
         used_list = []
