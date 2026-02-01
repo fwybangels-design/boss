@@ -221,7 +221,7 @@ async def mdm(ctx, *, message: str):
                 error_message = f"Failed: {e}"
                 print(error_message)
                 log_file.write(error_message + "\n")
-            await asyncio.sleep(1)
+            # Removed delay for faster DM speed
 
         # Build initial available_senders list (only clients that are ready and in the guild and not marked dead)
         available_senders = [
@@ -359,25 +359,27 @@ async def mdm(ctx, *, message: str):
                 except Exception:
                     pass
 
-            # Update status message (best-effort)
-            elapsed_time = int(time.time() - start_time)
-            try:
-                await status_message.edit(content=(
-                    f"**Mass DM Operation In Progress**\n"
-                    f"Message: {message}\n"
-                    f"Total Members: {len(ctx.guild.members)}\n"
-                    f"Time Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}\n"
-                    f"----------------------------------------\n"
-                    f"DMing: {member} ({member.id})\n"
-                    f"Status: {'Success' if member.dm_channel else 'Failed'}\n"
-                    f"People DMed: {sent_count}\n"
-                    f"People Failed to DM: {failed_count}\n"
-                    f"Time Elapsed: {elapsed_time} seconds"
-                ))
-            except Exception:
-                pass
+            # Update status message only every 10 DMs to reduce API calls and speed up operation
+            if (sent_count + failed_count) % 10 == 0:
+                elapsed_time = int(time.time() - start_time)
+                try:
+                    await status_message.edit(content=(
+                        f"**Mass DM Operation In Progress**\n"
+                        f"Message: {message}\n"
+                        f"Total Members: {len(ctx.guild.members)}\n"
+                        f"Time Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}\n"
+                        f"----------------------------------------\n"
+                        f"DMing: {member} ({member.id})\n"
+                        f"Status: {'Success' if member.dm_channel else 'Failed'}\n"
+                        f"People DMed: {sent_count}\n"
+                        f"People Failed to DM: {failed_count}\n"
+                        f"Time Elapsed: {elapsed_time} seconds"
+                    ))
+                except Exception:
+                    pass
 
-            await asyncio.sleep(0.1)
+            # Minimal delay for maximum speed - can send ~20 DMs per second
+            await asyncio.sleep(0.05)
 
         # Build sender report (used vs skipped)
         used_list = []
