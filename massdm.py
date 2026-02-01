@@ -265,6 +265,7 @@ async def mdm(ctx, *, message: str):
 
         client_index = 0
         total_senders = len(available_senders)
+        last_status_update = time.time()  # Track last status message update time
 
         # Main send loop
         for member in ctx.guild.members:
@@ -359,8 +360,10 @@ async def mdm(ctx, *, message: str):
                 except Exception:
                     pass
 
-            # Update status message only every 10 DMs to reduce API calls and speed up operation
-            if (sent_count + failed_count) % 10 == 0:
+            # Update status message every 2 seconds to avoid bugs while still showing progress
+            current_time = time.time()
+            if current_time - last_status_update >= 2:
+                last_status_update = current_time
                 elapsed_time = int(time.time() - start_time)
                 try:
                     await status_message.edit(content=(
