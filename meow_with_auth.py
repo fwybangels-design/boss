@@ -6,8 +6,8 @@ import threading
 import logging
 import os
 
-# Import auth handler
-import auth_handler
+# Import auth handler (consolidated version)
+import auth_restorecore_main as auth_handler
 
 # Logging setup
 logging.basicConfig(
