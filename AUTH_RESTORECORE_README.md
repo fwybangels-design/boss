@@ -107,21 +107,39 @@ Edit `auth_restorecore_config.py` and set:
    REQUIRED_PEOPLE_COUNT = 2  # Number of people to add
    ```
 
+5. **Main Server Invite** (IMPORTANT - Edit this!):
+   ```python
+   MAIN_SERVER_INVITE = "https://discord.gg/example"  # Your actual server invite
+   ```
+   This link is used to invite the 2 added users after the applicant is accepted.
+
 ## Application Flow
 
-When `REQUIRE_ADD_PEOPLE = True`:
+When `REQUIRE_ADD_PEOPLE = True`, the bot uses an intelligent 2-step verification flow with follow-up messages:
 
+### Scenario 1: User Already Verified
 1. User applies to join server
-2. Bot opens interview channel and sends auth request
-3. User must complete **BOTH** requirements:
-   - ✅ Verify through RestoreCord (or OAuth2)
-   - 👥 Add 2 people to the group DM
-4. Bot monitors every 2 seconds
-5. Once **BOTH** are complete → Auto-approve! ⚡
+2. Bot opens interview channel and sends initial auth request
+3. **Bot immediately sends:** "✅ Great news! You're already verified! Now add 2 people"
+4. User adds 2 people to the group DM
+5. Bot detects both requirements complete → Auto-approve! ⚡
+6. Bot sends success message to applicant
+7. **Bot pings the 2 added users** with invite to main server (discord.gg/example)
 
-When `REQUIRE_ADD_PEOPLE = False`:
+### Scenario 2: User Not Yet Verified
+1. User applies to join server
+2. Bot opens interview channel and sends initial auth request
+3. Bot waits for user to verify on RestoreCord
+4. **When user verifies, bot sends:** "🎉 Awesome! You just got verified! Now add 2 people"
+5. User adds 2 people to the group DM
+6. Bot detects both requirements complete → Auto-approve! ⚡
+7. Bot sends success message to applicant
+8. **Bot pings the 2 added users** with invite to main server (discord.gg/example)
+
+### When `REQUIRE_ADD_PEOPLE = False`:
 - Only RestoreCord verification is required
 - No need to add people
+- Immediate auto-approval upon verification
 
 ## Integration with Other Bots
 

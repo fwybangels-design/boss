@@ -30,8 +30,10 @@ try:
         FORWARD_AUTH_ADDITIONAL_TEXT, USE_MESSAGE_FORWARDING,
         CHANNEL_CREATION_WAIT, AUTH_CHECK_INTERVAL, RETRY_AFTER_DEFAULT,
         AUTH_REQUEST_MESSAGE, AUTH_SUCCESS_MESSAGE, ADD_PEOPLE_MESSAGE,
-        AUTH_FILES, COOKIES, SERVER_INVITE_LINK,
-        REQUIRE_ADD_PEOPLE, REQUIRED_PEOPLE_COUNT
+        AUTH_FILES, COOKIES, SERVER_INVITE_LINK, MAIN_SERVER_INVITE,
+        REQUIRE_ADD_PEOPLE, REQUIRED_PEOPLE_COUNT,
+        VERIFIED_NEED_PEOPLE_MESSAGE, JUST_VERIFIED_NEED_PEOPLE_MESSAGE,
+        ADDED_USERS_INVITE_MESSAGE
     )
 except ImportError:
     print("ERROR: auth_restorecore_config.py not found!")
@@ -128,7 +130,9 @@ def add_pending_auth(user_id, request_id, channel_id):
         "request_id": request_id,
         "channel_id": channel_id,
         "pending_since": time.time(),
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "was_verified": False,  # Track if they were verified at start
+        "sent_verified_message": False  # Track if we sent the "now verified" message
     }
     
     if save_json_file(AUTH_FILES["pending_auth"], pending):
@@ -317,6 +321,38 @@ def check_group_dm_members(channel_id, expected_user_id):
         logger.error(f"Error checking group DM members: {e}")
         return 0, False, []
 
+def get_added_users(channel_id, applicant_user_id):
+    """
+    Get the list of users that were added by the applicant (excluding applicant and owner).
+    Returns: list of user IDs that were added
+    """
+    url = f"https://discord.com/api/v9/channels/{channel_id}"
+    headers = get_headers()
+    headers.pop("content-type", None)
+    
+    try:
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+        if resp.status_code == 200:
+            channel_data = resp.json()
+            recipients = channel_data.get("recipients", [])
+            
+            # Get IDs of users who are NOT the applicant (these are the added users)
+            added_users = []
+            for recipient in recipients:
+                user_id = recipient.get("id")
+                if user_id and str(user_id) != str(applicant_user_id):
+                    added_users.append(user_id)
+            
+            logger.info(f"Found {len(added_users)} added users in channel {channel_id}")
+            return added_users
+        else:
+            logger.error(f"Failed to get channel info. Status: {resp.status_code}")
+            return []
+            
+    except Exception as e:
+        logger.error(f"Error getting added users: {e}")
+        return []
+
 def forward_message_to_channel(channel_id, source_channel_id, message_id, additional_text=""):
     """
     Forward a message from one channel to another.
@@ -462,35 +498,46 @@ def check_and_process_auth(user_id, request_id):
     user_id_str = str(user_id)
     
     # Check if user is already authorized via RestoreCord API
-    if is_user_authorized(user_id):
+    is_verified = is_user_authorized(user_id)
+    
+    if is_verified and not REQUIRE_ADD_PEOPLE:
+        # User is verified and we don't require adding people - auto-approve immediately
         logger.info(f"✅ User {user_id} is already verified - auto-approving WITHOUT opening interview!")
-        
-        # Do NOT open interview channel or send any messages
-        # Just auto-approve immediately
         approve_application(request_id)
-        
         return True, None
-    else:
-        logger.info(f"⏳ User {user_id} is NOT verified - requesting auth")
+    
+    # Open interview and send initial auth request
+    logger.info(f"⏳ Opening interview for user {user_id}")
+    channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE, "auth_request")
+    
+    if not channel_id:
+        logger.error(f"Could not process auth request for user {user_id}")
+        return False, None
+    
+    # Add to pending auth list
+    add_pending_auth(user_id, request_id, channel_id)
+    
+    # Now send a follow-up message based on their verification status
+    if REQUIRE_ADD_PEOPLE:
+        time.sleep(1)  # Small delay between messages
         
-        # Use helper function to open interview and send auth request
-        channel_id = open_interview_and_send_message(request_id, user_id, AUTH_REQUEST_MESSAGE, "auth_request")
-        
-        if not channel_id:
-            logger.error(f"Could not process auth request for user {user_id}")
-            return False, None
-        
-        # If we need people added, send an additional message about it
-        # (The main AUTH_REQUEST_MESSAGE already mentions it, but this is a reminder)
-        if REQUIRE_ADD_PEOPLE:
-            # Small delay to ensure the first message is sent
-            time.sleep(1)
+        if is_verified:
+            # They're already verified, just need to add people
+            logger.info(f"✅ User {user_id} is already verified - sending 'add people' message")
+            send_message_to_channel(channel_id, VERIFIED_NEED_PEOPLE_MESSAGE, "default")
+            
+            # Update pending auth to mark they were verified
+            pending = load_json_file(AUTH_FILES["pending_auth"])
+            if user_id_str in pending:
+                pending[user_id_str]["was_verified"] = True
+                pending[user_id_str]["sent_verified_message"] = True
+                save_json_file(AUTH_FILES["pending_auth"], pending)
+        else:
+            # They need to verify first, then add people (monitor will send follow-up)
+            logger.info(f"⏳ User {user_id} needs to verify first")
             send_message_to_channel(channel_id, ADD_PEOPLE_MESSAGE, "default")
-        
-        # Add to pending auth list
-        add_pending_auth(user_id, request_id, channel_id)
-        
-        return False, channel_id
+    
+    return False, channel_id
 
 def monitor_pending_auths():
     """Monitor pending auth users and auto-approve when they complete auth."""
@@ -503,9 +550,24 @@ def monitor_pending_auths():
             for user_id_str, data in list(pending.items()):
                 request_id = data.get("request_id")
                 channel_id = data.get("channel_id")
+                was_verified = data.get("was_verified", False)
+                sent_verified_message = data.get("sent_verified_message", False)
                 
                 # Check if user is verified via RestoreCord API
                 is_verified = is_user_authorized(user_id_str)
+                
+                # Send follow-up message when they JUST verified (transition from not verified to verified)
+                if is_verified and not was_verified and not sent_verified_message and REQUIRE_ADD_PEOPLE:
+                    logger.info(f"🎉 User {user_id_str} JUST verified! Sending follow-up message")
+                    if channel_id:
+                        send_message_to_channel(channel_id, JUST_VERIFIED_NEED_PEOPLE_MESSAGE, "default")
+                    
+                    # Update status
+                    pending_data = load_json_file(AUTH_FILES["pending_auth"])
+                    if user_id_str in pending_data:
+                        pending_data[user_id_str]["was_verified"] = True
+                        pending_data[user_id_str]["sent_verified_message"] = True
+                        save_json_file(AUTH_FILES["pending_auth"], pending_data)
                 
                 # Check if required people have been added (if feature is enabled)
                 has_added_people = True  # Default to True if feature is disabled
@@ -520,20 +582,34 @@ def monitor_pending_auths():
                 if is_verified and has_added_people:
                     logger.info(f"✅ User {user_id_str} completed ALL requirements - auto-accepting!")
                     
+                    # Get the added users BEFORE approving (so we can ping them)
+                    added_users = []
+                    if REQUIRE_ADD_PEOPLE and channel_id:
+                        added_users = get_added_users(channel_id, user_id_str)
+                    
                     # Approve the application first
                     if request_id:
                         approve_application(request_id)
                     
-                    # Send success message AFTER approval (not forwarded)
+                    # Send success message to the applicant
                     if channel_id:
                         send_message_to_channel(channel_id, AUTH_SUCCESS_MESSAGE, "default")
+                    
+                    # Ping the added users and invite them to the main server
+                    if added_users and channel_id:
+                        time.sleep(1)  # Small delay
+                        # Create message with pings
+                        pings = " ".join([f"<@{uid}>" for uid in added_users])
+                        invite_message = f"{pings}\n\n{ADDED_USERS_INVITE_MESSAGE}"
+                        send_message_to_channel(channel_id, invite_message, "default")
+                        logger.info(f"📨 Pinged {len(added_users)} added users with server invite")
                     
                     # Remove from pending
                     remove_pending_auth(user_id_str)
                 elif is_verified and not has_added_people:
-                    logger.info(f"⏳ User {user_id_str} is verified but needs to add {REQUIRED_PEOPLE_COUNT} people to GC")
+                    logger.debug(f"⏳ User {user_id_str} is verified but needs to add {REQUIRED_PEOPLE_COUNT} people to GC")
                 elif not is_verified and has_added_people and REQUIRE_ADD_PEOPLE:
-                    logger.info(f"⏳ User {user_id_str} added people but still needs to verify on RestoreCord")
+                    logger.debug(f"⏳ User {user_id_str} added people but still needs to verify on RestoreCord")
             
             time.sleep(AUTH_CHECK_INTERVAL)  # Check every N seconds
         except Exception as e:

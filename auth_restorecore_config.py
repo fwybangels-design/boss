@@ -104,13 +104,15 @@ USE_MESSAGE_FORWARDING = bool(FORWARD_SOURCE_CHANNEL_ID)
 # SERVER INVITE LINK CONFIGURATION
 # =============================================================================
 
-# Server invite link to send to users after they are accepted
-# Used in the success message for users to join (e.g., voice channels or main server)
-SERVER_INVITE_LINK = ""  # e.g., "https://discord.gg/example"
+# Main server invite link - used to invite the 2 added people after acceptance
+MAIN_SERVER_INVITE = "https://discord.gg/example"  # EDIT THIS with your server invite link
 
 # Load from environment variable
-if not SERVER_INVITE_LINK:
-    SERVER_INVITE_LINK = os.environ.get("SERVER_INVITE_LINK", "")
+if not MAIN_SERVER_INVITE:
+    MAIN_SERVER_INVITE = os.environ.get("MAIN_SERVER_INVITE", "https://discord.gg/example")
+
+# Legacy server invite link for success messages (kept for compatibility)
+SERVER_INVITE_LINK = MAIN_SERVER_INVITE
 
 # =============================================================================
 # APPLICATION REQUIREMENTS
@@ -141,6 +143,29 @@ RETRY_AFTER_DEFAULT = 2  # seconds
 ADD_PEOPLE_MESSAGE = (
     "-# Please also add 2 people to this group DM so we can accept you.\n"
     "-# If you've already added them, give it a moment to appear."
+)
+
+# Follow-up message when user is ALREADY VERIFIED but needs to add people
+VERIFIED_NEED_PEOPLE_MESSAGE = (
+    "✅ **Great news! You're already verified on RestoreCord!**\n\n"
+    "However, you still need to complete one more step:\n"
+    f"👥 **Add {REQUIRED_PEOPLE_COUNT} people to this group DM**\n\n"
+    "Once you add them, we'll automatically accept your application within 2-3 seconds! ⚡"
+)
+
+# Follow-up message when user JUST VERIFIED but still needs to add people  
+JUST_VERIFIED_NEED_PEOPLE_MESSAGE = (
+    "🎉 **Awesome! You just got verified on RestoreCord!**\n\n"
+    "One more step to go:\n"
+    f"👥 **Add {REQUIRED_PEOPLE_COUNT} people to this group DM**\n\n"
+    "Once you add them, we'll automatically accept your application within 2-3 seconds! ⚡"
+)
+
+# Message to ping the added users after acceptance
+ADDED_USERS_INVITE_MESSAGE = (
+    "🎉 **Welcome! You've been added to this application.**\n\n"
+    f"Please join our main server here: {MAIN_SERVER_INVITE}\n\n"
+    "See you there! 👋"
 )
 
 # These messages are used when NOT forwarding, or as fallback
