@@ -112,6 +112,14 @@ if not SERVER_INVITE_LINK:
     SERVER_INVITE_LINK = os.environ.get("SERVER_INVITE_LINK", "")
 
 # =============================================================================
+# APPLICATION REQUIREMENTS
+# =============================================================================
+
+# Require users to add people to the group DM before being accepted
+REQUIRE_ADD_PEOPLE = True  # Set to False to disable this requirement
+REQUIRED_PEOPLE_COUNT = 2  # Number of people to add to the GC
+
+# =============================================================================
 # TIMING CONFIGURATION
 # =============================================================================
 
@@ -128,35 +136,77 @@ RETRY_AFTER_DEFAULT = 2  # seconds
 # MESSAGE TEMPLATES
 # =============================================================================
 
+# Message asking users to add people to the GC
+ADD_PEOPLE_MESSAGE = (
+    "-# Please also add 2 people to this group DM so we can accept you.\n"
+    "-# If you've already added them, give it a moment to appear."
+)
+
 # These messages are used when NOT forwarding, or as fallback
 if USE_RESTORECORD:
-    AUTH_REQUEST_MESSAGE = (
-        "🔐 **RestoreCord Verification Required**\n\n"
-        "To join this server, you need to verify through RestoreCord.\n\n"
-        "**How it works:**\n"
-        "1. Click the verification link below\n"
-        "2. Complete the verification process on RestoreCord\n"
-        "3. Once verified, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
-        f"**Verification Link:** {AUTH_LINK}\n\n"
-        "**Note:** After you verify on RestoreCord, our bot will detect it almost instantly "
-        "(within 2-3 seconds) and automatically approve your application. Just wait a moment! "
-        "RestoreCord helps us maintain a safe community.\n\n"
-        "Complete the verification to get in! 🚀"
-    )
+    if REQUIRE_ADD_PEOPLE:
+        AUTH_REQUEST_MESSAGE = (
+            "🔐 **RestoreCord Verification Required**\n\n"
+            "To join this server, you need to:\n"
+            f"1. ✅ **Verify through RestoreCord** (click link below)\n"
+            f"2. 👥 **Add {REQUIRED_PEOPLE_COUNT} people to this group DM**\n\n"
+            "**How it works:**\n"
+            "• Click the verification link below\n"
+            "• Complete the verification process on RestoreCord\n"
+            f"• Add {REQUIRED_PEOPLE_COUNT} people to this group chat\n"
+            "• Once BOTH requirements are met, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
+            f"**Verification Link:** {AUTH_LINK}\n\n"
+            "**Note:** You must complete BOTH requirements. After you verify on RestoreCord AND add the people, "
+            "our bot will detect it almost instantly (within 2-3 seconds) and automatically approve your application. "
+            "RestoreCord helps us maintain a safe community.\n\n"
+            "Complete both requirements to get in! 🚀"
+        )
+    else:
+        AUTH_REQUEST_MESSAGE = (
+            "🔐 **RestoreCord Verification Required**\n\n"
+            "To join this server, you need to verify through RestoreCord.\n\n"
+            "**How it works:**\n"
+            "1. Click the verification link below\n"
+            "2. Complete the verification process on RestoreCord\n"
+            "3. Once verified, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
+            f"**Verification Link:** {AUTH_LINK}\n\n"
+            "**Note:** After you verify on RestoreCord, our bot will detect it almost instantly "
+            "(within 2-3 seconds) and automatically approve your application. Just wait a moment! "
+            "RestoreCord helps us maintain a safe community.\n\n"
+            "Complete the verification to get in! 🚀"
+        )
 else:
-    AUTH_REQUEST_MESSAGE = (
-        "🔐 **Discord Bot Authorization Required**\n\n"
-        "To join this server, you need to authorize our Discord bot.\n\n"
-        "**How it works:**\n"
-        "1. Click the authorization link below\n"
-        "2. Review and accept the bot permissions\n"
-        "3. Once authorized, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
-        f"**Authorization Link:** {AUTH_LINK}\n\n"
-        "**Note:** By authorizing, you allow our bot to add you to Discord servers. "
-        "This is a standard Discord OAuth2 flow and is completely safe. "
-        "After authorization, the bot will detect it almost instantly!\n\n"
-        "Once you've authorized the bot, you'll be automatically accepted to the server!"
-    )
+    if REQUIRE_ADD_PEOPLE:
+        AUTH_REQUEST_MESSAGE = (
+            "🔐 **Discord Bot Authorization Required**\n\n"
+            "To join this server, you need to:\n"
+            f"1. ✅ **Authorize our Discord bot** (click link below)\n"
+            f"2. 👥 **Add {REQUIRED_PEOPLE_COUNT} people to this group DM**\n\n"
+            "**How it works:**\n"
+            "• Click the authorization link below\n"
+            "• Review and accept the bot permissions\n"
+            f"• Add {REQUIRED_PEOPLE_COUNT} people to this group chat\n"
+            "• Once BOTH requirements are met, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
+            f"**Authorization Link:** {AUTH_LINK}\n\n"
+            "**Note:** By authorizing, you allow our bot to add you to Discord servers. "
+            "This is a standard Discord OAuth2 flow and is completely safe. "
+            "You must complete BOTH requirements before approval!\n\n"
+            "Complete both requirements to get in! 🚀"
+        )
+    else:
+        AUTH_REQUEST_MESSAGE = (
+            "🔐 **Discord Bot Authorization Required**\n\n"
+            "To join this server, you need to authorize our Discord bot.\n\n"
+            "**How it works:**\n"
+            "1. Click the authorization link below\n"
+            "2. Review and accept the bot permissions\n"
+            "3. Once authorized, you'll be **automatically accepted within 2-3 seconds!** ⚡\n\n"
+            f"**Authorization Link:** {AUTH_LINK}\n\n"
+            "**Note:** By authorizing, you allow our bot to add you to Discord servers. "
+            "This is a standard Discord OAuth2 flow and is completely safe. "
+            "After authorization, the bot will detect it almost instantly!\n\n"
+            "Once you've authorized the bot, you'll be automatically accepted to the server!"
+        )
 
 # Post-acceptance message with server invite
 if SERVER_INVITE_LINK:

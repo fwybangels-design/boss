@@ -101,6 +101,28 @@ Edit `auth_restorecore_config.py` and set:
    BOT_CLIENT_ID = "your_bot_client_id"
    ```
 
+4. **Application Requirements** (optional):
+   ```python
+   REQUIRE_ADD_PEOPLE = True  # Require adding people to group DM
+   REQUIRED_PEOPLE_COUNT = 2  # Number of people to add
+   ```
+
+## Application Flow
+
+When `REQUIRE_ADD_PEOPLE = True`:
+
+1. User applies to join server
+2. Bot opens interview channel and sends auth request
+3. User must complete **BOTH** requirements:
+   - ✅ Verify through RestoreCord (or OAuth2)
+   - 👥 Add 2 people to the group DM
+4. Bot monitors every 2 seconds
+5. Once **BOTH** are complete → Auto-approve! ⚡
+
+When `REQUIRE_ADD_PEOPLE = False`:
+- Only RestoreCord verification is required
+- No need to add people
+
 ## Integration with Other Bots
 
 To use this in other bots (like meow.py):
@@ -116,6 +138,7 @@ is_authorized, channel_id = auth_handler.process_application_with_auth(user_id, 
 
 - ✅ Real-time verification via RestoreCord API
 - ✅ Auto-approval of verified users (no interview needed)
+- ✅ Require users to add people to group DM before acceptance
 - ✅ Background monitoring of pending auth requests
 - ✅ Message forwarding support
 - ✅ CLI management interface

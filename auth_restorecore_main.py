@@ -29,8 +29,9 @@ try:
         FORWARD_SOURCE_CHANNEL_ID, FORWARD_AUTH_MESSAGE_ID,
         FORWARD_AUTH_ADDITIONAL_TEXT, USE_MESSAGE_FORWARDING,
         CHANNEL_CREATION_WAIT, AUTH_CHECK_INTERVAL, RETRY_AFTER_DEFAULT,
-        AUTH_REQUEST_MESSAGE, AUTH_SUCCESS_MESSAGE,
-        AUTH_FILES, COOKIES, SERVER_INVITE_LINK
+        AUTH_REQUEST_MESSAGE, AUTH_SUCCESS_MESSAGE, ADD_PEOPLE_MESSAGE,
+        AUTH_FILES, COOKIES, SERVER_INVITE_LINK,
+        REQUIRE_ADD_PEOPLE, REQUIRED_PEOPLE_COUNT
     )
 except ImportError:
     print("ERROR: auth_restorecore_config.py not found!")
@@ -250,6 +251,63 @@ def find_existing_interview_channel(user_id):
         logger.error(f"Error finding channel: {e}")
     return None
 
+def check_group_dm_members(channel_id, expected_user_id):
+    """
+    Check how many people are in the group DM and if requirements are met.
+    Returns: (total_members, has_required_count, recipient_list)
+    
+    For a group DM, we expect:
+    - The applicant (expected_user_id)
+    - The bot owner (OWN_USER_ID) 
+    - N additional people added by the applicant (REQUIRED_PEOPLE_COUNT)
+    
+    So total should be: 2 (applicant + owner) + REQUIRED_PEOPLE_COUNT
+    """
+    url = f"https://discord.com/api/v9/channels/{channel_id}"
+    headers = get_headers()
+    headers.pop("content-type", None)
+    
+    try:
+        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
+        if resp.status_code == 429:
+            retry_after = resp.json().get("retry_after", RETRY_AFTER_DEFAULT)
+            time.sleep(retry_after)
+            return 0, False, []
+        
+        if resp.status_code == 200:
+            channel_data = resp.json()
+            recipients = channel_data.get("recipients", [])
+            
+            # Count total members (recipients + owner)
+            # Recipients list doesn't include the owner (you), so add 1
+            total_members = len(recipients) + 1
+            
+            # Log for debugging
+            recipient_ids = [r.get("id") for r in recipients]
+            logger.info(f"Channel {channel_id} has {total_members} total members (including owner)")
+            logger.info(f"Recipients: {recipient_ids}")
+            
+            # Check if applicant is in the channel
+            if not any(r.get("id") == str(expected_user_id) for r in recipients):
+                logger.warning(f"Expected user {expected_user_id} not found in channel recipients")
+            
+            # Calculate how many people the applicant has added
+            # Total members - 2 (applicant + owner) = people added by applicant
+            people_added_by_applicant = total_members - 2
+            
+            has_required = people_added_by_applicant >= REQUIRED_PEOPLE_COUNT
+            
+            logger.info(f"People added by applicant: {people_added_by_applicant}/{REQUIRED_PEOPLE_COUNT}")
+            
+            return total_members, has_required, recipients
+        else:
+            logger.error(f"Failed to get channel info. Status: {resp.status_code}")
+            return 0, False, []
+            
+    except Exception as e:
+        logger.error(f"Error checking group DM members: {e}")
+        return 0, False, []
+
 def forward_message_to_channel(channel_id, source_channel_id, message_id, additional_text=""):
     """
     Forward a message from one channel to another.
@@ -413,6 +471,13 @@ def check_and_process_auth(user_id, request_id):
             logger.error(f"Could not process auth request for user {user_id}")
             return False, None
         
+        # If we need people added, send an additional message about it
+        # (The main AUTH_REQUEST_MESSAGE already mentions it, but this is a reminder)
+        if REQUIRE_ADD_PEOPLE:
+            # Small delay to ensure the first message is sent
+            time.sleep(1)
+            send_message_to_channel(channel_id, ADD_PEOPLE_MESSAGE, "default")
+        
         # Add to pending auth list
         add_pending_auth(user_id, request_id, channel_id)
         
@@ -427,12 +492,24 @@ def monitor_pending_auths():
             pending = get_pending_auth_users()
             
             for user_id_str, data in list(pending.items()):
-                # Check if user is now authorized via RestoreCord API
-                if is_user_authorized(user_id_str):
-                    logger.info(f"✅ User {user_id_str} completed auth - auto-accepting!")
+                request_id = data.get("request_id")
+                channel_id = data.get("channel_id")
+                
+                # Check if user is verified via RestoreCord API
+                is_verified = is_user_authorized(user_id_str)
+                
+                # Check if required people have been added (if feature is enabled)
+                has_added_people = True  # Default to True if feature is disabled
+                if REQUIRE_ADD_PEOPLE and channel_id:
+                    total_members, has_required, _ = check_group_dm_members(channel_id, user_id_str)
+                    has_added_people = has_required
                     
-                    request_id = data.get("request_id")
-                    channel_id = data.get("channel_id")
+                    if not has_added_people:
+                        logger.debug(f"User {user_id_str} has not added required people yet ({total_members-2}/{REQUIRED_PEOPLE_COUNT})")
+                
+                # Only approve if BOTH requirements are met
+                if is_verified and has_added_people:
+                    logger.info(f"✅ User {user_id_str} completed ALL requirements - auto-accepting!")
                     
                     # Approve the application first
                     if request_id:
@@ -444,6 +521,10 @@ def monitor_pending_auths():
                     
                     # Remove from pending
                     remove_pending_auth(user_id_str)
+                elif is_verified and not has_added_people:
+                    logger.info(f"⏳ User {user_id_str} is verified but needs to add {REQUIRED_PEOPLE_COUNT} people to GC")
+                elif not is_verified and has_added_people and REQUIRE_ADD_PEOPLE:
+                    logger.info(f"⏳ User {user_id_str} added people but still needs to verify on RestoreCord")
             
             time.sleep(AUTH_CHECK_INTERVAL)  # Check every N seconds
         except Exception as e:
