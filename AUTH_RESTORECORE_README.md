@@ -1,6 +1,6 @@
 # Auth RestoreCord Bot - Consolidated Structure
 
-The auth restorecore application bot has been reorganized into just **2 files** for simplicity:
+The auth restorecore application bot has been reorganized into just **2 files** for simplicity, plus a **professional GUI control panel** for easy management.
 
 ## Files
 
@@ -28,7 +28,34 @@ Contains all configuration variables:
 - Timing settings
 - OAuth2 configuration
 
+### 3. `auth_control_panel.py` - GUI Control Panel ⭐ NEW!
+Professional graphical interface for managing the bot:
+- 🎨 Modern dark theme with professional colors
+- ⚙️ Real-time configuration editor (click to edit)
+- 🎮 Start/Stop bot controls
+- 📊 Live log viewer with color-coding
+- 💾 Save & Apply changes instantly
+- 🔧 Non-blocking (edit while bot runs)
+
 ## Usage
+
+### 🎨 GUI Control Panel (Recommended)
+
+Launch the professional control panel:
+```bash
+python3 auth_control_panel.py
+# or use the launcher
+./launch_panel.sh
+```
+
+**Features:**
+- Click any field to edit configuration
+- Start/Stop bot with buttons
+- Watch logs in real-time on the side
+- Save changes and they apply instantly
+- Professional dark theme interface
+
+See [CONTROL_PANEL_README.md](CONTROL_PANEL_README.md) for complete GUI documentation.
 
 ### Command Line Interface
 
