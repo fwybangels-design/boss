@@ -213,7 +213,16 @@ def check_restorecord_verification(user_id):
 # =============================================================================
 
 def open_interview(request_id):
-    """Open interview channel for an application."""
+    """
+    Open interview channel for an application.
+    Handles rate limiting automatically by sleeping when 429 is received.
+    
+    Args:
+        request_id: The application request ID
+        
+    Returns:
+        bool: True if successful (200 or 201), False otherwise
+    """
     url = f"https://discord.com/api/v9/join-requests/{request_id}/interview"
     headers = get_headers()
     headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"

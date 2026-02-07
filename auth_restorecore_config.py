@@ -105,6 +105,7 @@ USE_MESSAGE_FORWARDING = bool(FORWARD_SOURCE_CHANNEL_ID)
 # =============================================================================
 
 # Server invite link to send to users after they are accepted
+# Used in the success message for users to join (e.g., voice channels or main server)
 SERVER_INVITE_LINK = ""  # e.g., "https://discord.gg/example"
 
 # Load from environment variable
