@@ -1,429 +1,494 @@
-import requests
-import json
+# mass_dm_bot_verify_button.py
+# WARNING: Replace placeholder tokens with your real tokens locally.
+# Mass-DMing large numbers of users may violate Discord TOS. Use responsibly.
+#
+# ========================================================================
+# HOW TO ADJUST SPEED AND DELAYS:
+# ========================================================================
+# 1. STATUS_UPDATE_INTERVAL: How often the status message updates
+#    - Look for "STATUS_UPDATE_INTERVAL" in the DELAY CONFIGURATION section
+#    - Default: 5.0 seconds
+#    - Lower = more frequent updates but may hit rate limits
+#    - Higher = less frequent updates but more efficient
+#
+# 2. DM_DELAY: Delay between each DM attempt
+#    - Look for "DM_DELAY" in the DELAY CONFIGURATION section
+#    - Default: 0.05 seconds (50ms)
+#    - Lower = faster DM sending but higher risk of rate limits
+#    - Higher = slower but safer
+#    - Recommended range: 0.01 to 0.1 seconds
+#
+# 3. MAX_CONCURRENT_DMS: Maximum concurrent DMs at once (PRIMARY SPEED CONTROL)
+#    - Look for "MAX_CONCURRENT_DMS" in the DELAY CONFIGURATION section
+#    - Default: 10 (conservative for safety)
+#    - Higher = faster but more likely to trigger rate limits
+#    - Lower = slower but safer
+#    - Recommended range: 10 to 100 (upper limit depends on number of sender tokens)
+#    - Rule of thumb: Set to (number of sender tokens × 5) for optimal speed
+#      Note: "sender tokens" = tokens in TOKENS list excluding the controller (first token)
+#      e.g., with 11 total tokens (1 controller + 10 senders), can use 50 concurrent
+#      e.g., with 21 total tokens (1 controller + 20 senders), can use 100 concurrent
+# ========================================================================
+
+
 import time
-import random
-import threading
-import logging
+import asyncio
+from discord.ext import commands
+import discord
+from discord.ui import Button, View
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s'
-)
-logger = logging.getLogger(__name__)
+# --- Intents ---
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
 
-# ---------------------------
-# Configuration
-# ---------------------------
-# PASTE YOUR DISCORD USER TOKEN HERE (between the quotes):
-# ⚠️  WARNING: This bot uses USER tokens, not bot tokens!
-# ⚠️  Using USER tokens may violate Discord's Terms of Service!
-# ⚠️  USER tokens provide FULL ACCESS to your account - keep them SECRET!
-TOKEN = ""
+# --- Bot (controller) ---
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# If TOKEN is not set above, try loading from environment variable
-import os
-if not TOKEN:
-    TOKEN = os.environ.get("DISCORD_TOKEN", "")
+# --- Tokens (replace locally) ---
+TOKENS = [
+    
+"",
+"",
+"",
 
-# Clean up the token: strip whitespace and remove "Bot " prefix if accidentally added
-TOKEN = TOKEN.strip()
-if TOKEN.startswith("Bot "):
-    TOKEN = TOKEN[4:].strip()
+    # Add more sender tokens if needed
+]
 
-GUILD_ID = "1464067001256509452"
-OWN_USER_ID = "1411325023053938730"
+# --- DELAY CONFIGURATION (edit these values to adjust speed) ---
+# How often to update the status message (in seconds)
+STATUS_UPDATE_INTERVAL = 5.0
 
-# Initial message - only asks for screenshot
-MESSAGE_CONTENT = ("YOU MUST join the tele network https://t.me/addlist/cS0b_-rSPsphZDVh and it will insta accept you,\n"
-                   "-# SEND A SCREENSHOT OF YOU IN THE [TELEGRAM](https://t.me/addlist/cS0b_-rSPsphZDVh) TO BE ACCEPTED")
+# Delay between each DM attempt (in seconds) - helps avoid rate limits
+DM_DELAY = 0.01  # 50ms between DMs
 
-# NEW: special reminder message when a user posts an image but hasn't added 2 people to the group DM yet
-ADD_TWO_PEOPLE_MESSAGE = ("-# Please also add 2 people to this group DM so we can accept you.\n"
-                          "-# uploading a screenshot alone isn't enough. If you've already added them, give it a moment to appear.")
+# Maximum concurrent DMs being sent at once (PRIMARY SPEED CONTROL)
+# Default is conservative (10). Increase for faster performance:
+# Rule of thumb: Set to (number of sender tokens × 5) for optimal speed
+# Note: Sender tokens = TOKENS list excluding the first token (controller)
+# e.g., 11 total tokens (1 controller + 10 senders) → set to 50
+# e.g., 21 total tokens (1 controller + 20 senders) → set to 100
+MAX_CONCURRENT_DMS = 200
 
-# Server invite link to send to the 2 users after approval
-SERVER_INVITE_LINK = "https://discord.gg/y36kayeu"
+# --- Globals ---
+sender_clients = []
+sender_tasks = []
+sender_meta = {}
+dm_active = False
 
-COOKIES = {
-    # ...your cookies here...
-}
+# --- Utility function ---
+def user_label_from_user_obj(user):
+    if user is None:
+        return "unknown"
+    name = getattr(user, "name", None)
+    disc = getattr(user, "discriminator", None)
+    uid = getattr(user, "id", None)
+    if name is None:
+        return f"unknown ({uid})"
+    if disc is not None and disc != "":
+        return f"{name}#{disc}"
+    return f"{name} ({uid})"
 
-def get_headers():
-    """Get headers with current TOKEN value for API requests."""
-    return {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "authorization": TOKEN,
-        "origin": "https://discord.com",
-        "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-        "x-context-properties": "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ==",
+# --- Button view ---
+class VerifyButton(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(Button(
+            label="Join Me",
+            style=discord.ButtonStyle.link,
+            url="https://discord.com/oauth2/authorize?client_id=1473938618593579038&redirect_uri=https%3A%2F%2Frestorecord.com%2Fapi%2Fcallback&response_type=code&scope=identify+guilds.join&state=1475561090028011652&prompt=none"
+        ))
+
+# --- Bot ready ---
+@bot.event
+async def on_ready():
+    print(f'Controller logged in as {bot.user} ({bot.user.id})')
+
+# --- Supervise sender clients ---
+async def _supervise_sender(token: str, token_index: int, max_restarts: int = 3):
+    client = discord.Client(intents=intents)
+    sender_clients.append(client)
+    sender_meta[client] = {
+        "token_index": token_index,
+        "token": token,
+        "dead": False,
+        "restarts": 0,
+        "started_once": False,
     }
+    meta = sender_meta[client]
 
-# Configuration
-POLL_INTERVAL = 0.5  # Check for new applications every 0.5 seconds (faster detection)
-APPROVAL_CHECK_INTERVAL = 0.5  # Check approval conditions every 0.5 seconds (instant detection)
-SEND_RETRY_DELAY = 1
-MAX_TOTAL_SEND_TIME = 180
-CHANNEL_FIND_TIMEOUT = 30
-
-# State tracking
-seen_reqs = set()
-open_interviews = {}
-open_interviews_lock = threading.Lock()
-
-# Track which users we've sent the "add 2 people" reminder to
-add_two_people_reminded = set()
-
-def make_nonce():
-    return str(random.randint(10**17, 10**18-1))
-
-def get_pending_applications():
-    """Fetch pending applications from Discord API."""
-    url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests?status=SUBMITTED&limit=100"
-    headers = get_headers()
-    headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 5)
-            logger.warning(f"Rate limited! Waiting {retry_after}s")
-            time.sleep(retry_after)
-            return []
-        return resp.json().get("guild_join_requests", [])
-    except Exception as e:
-        logger.error(f"Could not fetch applications: {e}")
-        return []
-
-def open_interview(request_id):
-    """Open interview channel for an application."""
-    url = f"https://discord.com/api/v9/join-requests/{request_id}/interview"
-    headers = get_headers()
-    headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
-    headers["content-type"] = "application/json"
-    try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, timeout=10)
-        if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 2)
-            time.sleep(retry_after)
-    except Exception as e:
-        logger.error(f"Error opening interview: {e}")
-
-def find_existing_interview_channel(user_id):
-    """Find the group DM channel for a user."""
-    url = "https://discord.com/api/v9/users/@me/channels"
-    headers = get_headers()
-    headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 2)
-            time.sleep(retry_after)
-            return None
-        channels = resp.json()
-        if not isinstance(channels, list):
-            return None
-        for c in channels:
-            if isinstance(c, dict) and c.get("type") == 3:
-                recipient_ids = [u["id"] for u in c.get("recipients", [])]
-                if str(user_id) in [str(r) for r in recipient_ids]:
-                    return c["id"]
-    except Exception as e:
-        logger.error(f"Error finding channel: {e}")
-    return None
-
-def message_already_sent(channel_id, content):
-    """Check if we already sent the message to avoid duplicates."""
-    url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
-    headers = get_headers()
-    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        if resp.status_code == 429:
-            return False
-        messages = resp.json()
-        if not isinstance(messages, list):
-            return False
-        for m in messages:
-            if m.get("author", {}).get("id") == OWN_USER_ID and content in m.get("content", ""):
-                return True
-    except Exception as e:
-        logger.error(f"[!] Exception in message_already_sent: {e}")
-    return False
-
-def send_interview_message(channel_id, message):
-    """Send a message to the interview channel."""
-    headers = get_headers()
-    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    headers["content-type"] = "application/json"
-    data = {
-        "content": message,
-        "nonce": make_nonce(),
-        "tts": False,
-        "flags": 0
-    }
-    url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
-    try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
-        if resp.status_code == 200 or resp.status_code == 201:
-            logger.info(f"Sent message to channel {channel_id}")
-            return True
-        elif resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 10)
-            logger.warning(f"Rate limited! Waiting {retry_after}s")
-            time.sleep(retry_after)
-        elif resp.status_code == 404:
-            logger.warning("Channel not found yet (404)")
-        else:
-            logger.warning(f"Failed to send message. Status: {resp.status_code}")
-    except Exception as e:
-        logger.error(f"Exception sending message: {e}")
-    return False
-
-def get_channel_recipients(channel_id):
-    """Get list of recipients in a group DM channel."""
-    url = f"https://discord.com/api/v9/channels/{channel_id}"
-    headers = get_headers()
-    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 2)
-            time.sleep(retry_after)
-            return []
-        if resp.status_code == 200:
-            data = resp.json()
-            return [u.get("id") for u in data.get("recipients", [])]
-    except Exception as e:
-        logger.error(f"[!] Exception getting channel recipients: {e}")
-    return []
-
-def channel_has_image(channel_id, user_id):
-    """Check if channel has an image from the user."""
-    url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
-    headers = get_headers()
-    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    headers.pop("content-type", None)
-    try:
-        resp = requests.get(url, headers=headers, cookies=COOKIES, timeout=10)
-        if resp.status_code == 429:
-            return False
-        messages = resp.json()
-        if not isinstance(messages, list):
-            return False
-        for m in messages:
-            if m.get("author", {}).get("id") == str(user_id):
-                if m.get("attachments") or m.get("embeds"):
-                    return True
-    except Exception as e:
-        logger.error(f"[!] Exception checking for image: {e}")
-    return False
-
-def check_two_people_added(channel_id, applicant_user_id):
-    """Check if 2 people (besides applicant and bot owner) have been added to the group DM."""
-    recipients = get_channel_recipients(channel_id)
-    # Filter out the applicant and the bot owner
-    other_users = [r for r in recipients if str(r) != str(applicant_user_id) and str(r) != OWN_USER_ID]
-    return len(other_users) >= 2, other_users
-
-def approve_application(request_id):
-    """Approve an application."""
-    url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/requests/id/{request_id}"
-    headers = get_headers()
-    headers["content-type"] = "application/json"
-    headers["referer"] = f"https://discord.com/channels/{GUILD_ID}/member-safety"
-    data = {"action": "APPROVED"}
-    try:
-        resp = requests.patch(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
-        if resp.status_code == 200:
-            logger.info(f"✅ Approved application {request_id}")
-        else:
-            logger.warning(f"Failed to approve. Status: {resp.status_code}")
-        if resp.status_code == 429:
-            retry_after = resp.json().get("retry_after", 2)
-            time.sleep(retry_after)
-    except Exception as e:
-        logger.error(f"Exception approving application: {e}")
-
-def notify_added_users(channel_id, added_users):
-    """Send notification to the 2 users who were added."""
-    if len(added_users) < 2:
-        return
-    
-    user1 = added_users[0]
-    user2 = added_users[1]
-    
-    message = f"<@{user1}> <@{user2}> join {SERVER_INVITE_LINK} so i can let u in"
-    
-    headers = get_headers()
-    headers["referer"] = f"https://discord.com/channels/@me/{channel_id}"
-    headers["content-type"] = "application/json"
-    data = {
-        "content": message,
-        "nonce": make_nonce(),
-        "tts": False,
-        "flags": 0,
-        "allowed_mentions": {"parse": [], "users": [str(user1), str(user2)]}
-    }
-    url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
-    
-    try:
-        resp = requests.post(url, headers=headers, cookies=COOKIES, data=json.dumps(data), timeout=10)
-        if resp.status_code in (200, 201):
-            logger.info(f"✅ Notified users {user1} and {user2} to join server")
-        else:
-            logger.warning(f"Failed to notify users. Status: {resp.status_code}")
-    except Exception as e:
-        logger.error(f"Exception notifying users: {e}")
-
-def process_application(reqid, user_id):
-    """Process a single application."""
-    logger.info(f"Processing application: reqid={reqid}, user={user_id}")
-    
-    # Step 1: Open interview
-    open_interview(reqid)
-    
-    # Step 2: Find the channel
-    start_time = time.time()
-    channel_id = None
-    while time.time() - start_time < CHANNEL_FIND_TIMEOUT:
-        channel_id = find_existing_interview_channel(user_id)
-        if channel_id:
-            break
-        time.sleep(0.5)  # Check every 0.5 seconds for faster channel detection
-    
-    if not channel_id:
-        logger.warning(f"Could not find channel for reqid={reqid}")
-        return
-    
-    logger.info(f"Found channel {channel_id} for reqid={reqid}")
-    
-    # Step 3: Send message (if not already sent)
-    sent = False
-    if message_already_sent(channel_id, MESSAGE_CONTENT):
-        logger.info(f"Message already sent in {channel_id}")
-        sent = True
-    else:
-        start_send = time.time()
-        while not sent and (time.time() - start_send) < MAX_TOTAL_SEND_TIME:
-            sent = send_interview_message(channel_id, MESSAGE_CONTENT)
-            if not sent:
-                time.sleep(SEND_RETRY_DELAY)
-    
-    if not sent:
-        logger.warning(f"Failed to send message in {channel_id}")
-        return
-    
-    # Step 4: Register for monitoring
-    with open_interviews_lock:
-        open_interviews[str(user_id)] = {"reqid": reqid, "channel_id": channel_id}
-    
-    logger.info(f"Monitoring user={user_id} for approval conditions")
-
-def approval_monitor():
-    """Monitor open interviews and approve when conditions are met."""
-    print("Monitor thread started")
-    
-    while True:
-        with open_interviews_lock:
-            users_to_check = list(open_interviews.keys())
-        
-        for user_id in users_to_check:
-            with open_interviews_lock:
-                if user_id not in open_interviews:
-                    continue
-                info = open_interviews[user_id].copy()  # Copy to avoid holding lock during API calls
-            
-            reqid = info.get("reqid")
-            channel_id = info.get("channel_id")
-            
-            if not reqid or not channel_id:
-                continue
-            
-            # Check both conditions
-            try:
-                has_two_people, added_users = check_two_people_added(channel_id, user_id)
-                has_image = channel_has_image(channel_id, user_id)
-            except Exception as e:
-                logger.error(f"Error checking user {user_id}: {e}")
-                continue
-            
-            # If image present but not 2 people added, send the "add 2 people" reminder once
-            if has_image and not has_two_people:
-                if str(user_id) not in add_two_people_reminded:
-                    logger.info(f"Sending 'add 2 people' reminder to user {user_id}")
-                    reminder = f"<@{user_id}>\n{ADD_TWO_PEOPLE_MESSAGE}"
-                    if send_interview_message(channel_id, reminder):
-                        add_two_people_reminded.add(str(user_id))
-                        logger.info(f"Sent 'add 2 people' reminder to user {user_id}")
-            
-            # Approve if both conditions are met
-            if has_two_people and has_image:
-                logger.info(f"APPROVING user={user_id} (has 2 people + screenshot)")
-                approve_application(reqid)
-                
-                # Notify the 2 added users
-                if len(added_users) >= 2:
-                    notify_added_users(channel_id, added_users)
-                
-                # Remove from monitoring
-                with open_interviews_lock:
-                    if user_id in open_interviews:
-                        del open_interviews[user_id]
-                # Clear reminder state
-                add_two_people_reminded.discard(str(user_id))
-        
-        time.sleep(APPROVAL_CHECK_INTERVAL)  # Check every 0.5 seconds for instant detection
-
-def main():
-    """Main entry point."""
-    if not TOKEN:
-        print("="*60)
-        print("ERROR: Discord TOKEN is not configured!")
-        print("Please set your Discord USER token in the TOKEN variable")
-        print("="*60)
-        return
-    
-    print("="*60)
-    print("Discord Application Bot Started")
-    print("="*60)
-    
-    # Start approval monitor thread
-    monitor_thread = threading.Thread(target=approval_monitor, daemon=True)
-    monitor_thread.start()
-    
-    # Main loop - poll for new applications
-    print("Polling for applications...")
-    while True:
+    @client.event
+    async def _on_ready(c=client):
         try:
-            apps = get_pending_applications()
-            for app in apps:
-                reqid = app.get("id")
-                user_id = app.get("user_id")
-                if not reqid or not user_id:
-                    continue
-                if reqid not in seen_reqs:
-                    seen_reqs.add(reqid)
-                    logger.info(f"NEW APPLICATION: reqid={reqid}, user={user_id}")
-                    # Process in a separate thread
-                    thread = threading.Thread(target=process_application, args=(reqid, user_id))
-                    thread.start()
-            
-            time.sleep(POLL_INTERVAL)
-        except KeyboardInterrupt:
-            print("\nShutting down...")
+            label = user_label_from_user_obj(getattr(c, "user", None))
+            print(f"[sender #{token_index}] logged in as {label}")
+        except Exception:
+            print(f"[sender #{token_index}] logged in (label unavailable)")
+        meta["started_once"] = True
+
+    while not meta["dead"] and meta["restarts"] <= max_restarts:
+        try:
+            await client.start(token, reconnect=False)
             break
+        except discord.LoginFailure:
+            meta["dead"] = True
+            print(f"[sender #{token_index}] token invalid/revoked. Marking dead.")
+            break
+        except discord.HTTPException as e:
+            status = getattr(e, "status", None)
+            if status == 401 or "unauthorized" in str(e).lower():
+                meta["dead"] = True
+                print(f"[sender #{token_index}] HTTP 401/Unauthorized. Marking dead.")
+                break
+            meta["restarts"] += 1
+            if meta["restarts"] > max_restarts:
+                print(f"[sender #{token_index}] Max restarts reached. Stopping retries.")
+                break
+            backoff = min(60, 2 ** meta["restarts"])
+            print(f"[sender #{token_index}] HTTPException: {e}. Restarting after {backoff}s.")
+            await asyncio.sleep(backoff)
+            continue
         except Exception as e:
-            logger.error(f"Error in main loop: {e}")
-            time.sleep(5)
+            meta["restarts"] += 1
+            if meta["restarts"] > max_restarts:
+                print(f"[sender #{token_index}] Unexpected error, max restarts reached: {e}")
+                break
+            backoff = min(60, 2 ** meta["restarts"])
+            print(f"[sender #{token_index}] Unexpected error: {e}. Restarting after {backoff}s.")
+            await asyncio.sleep(backoff)
+            continue
+
+    try:
+        if not getattr(client, "is_closed", lambda: True)():
+            await client.close()
+    except Exception:
+        pass
+
+    if meta["dead"]:
+        print(f"[sender #{token_index}] token dead; supervisor ending.")
+    else:
+        print(f"[sender #{token_index}] supervision ended.")
+
+async def start_all_senders_supervised(sender_tokens):
+    for i, tok in enumerate(sender_tokens, start=1):
+        task = asyncio.create_task(_supervise_sender(tok, token_index=i))
+        sender_tasks.append(task)
+        await asyncio.sleep(0.15)
+
+# --- Mass DM command ---
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def mdm(ctx, *, message: str):
+    global dm_active
+    if dm_active:
+        await ctx.send("A mass DM operation is already in progress.")
+        return
+
+    dm_active = True
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    # Shared state for tracking progress
+    sent_count = 0
+    failed_count = 0
+    current_member_info = {"name": "N/A", "id": "N/A", "status": "Pending"}
+    start_time = time.time()
+    controller_label = user_label_from_user_obj(getattr(bot, "user", None))
+    
+    # Thread-safe counters using asyncio.Lock
+    stats_lock = asyncio.Lock()
+
+    status_message = await ctx.send(
+        f"**Mass DM Operation Started**\n"
+        f"Message: {message}\n"
+        f"Total Members: {len(ctx.guild.members)}\n"
+        f"Time Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}\n"
+        f"----------------------------------------\n"
+        f"DMing: N/A\n"
+        f"Status: Pending\n"
+        f"People DMed: {sent_count}\n"
+        f"People Failed to DM: {failed_count}\n"
+        f"Time Elapsed: 0 seconds"
+    )
+
+    # Status update task - runs every STATUS_UPDATE_INTERVAL seconds
+    async def update_status():
+        while dm_active:
+            await asyncio.sleep(STATUS_UPDATE_INTERVAL)
+            if not dm_active:
+                break
+            
+            elapsed_time = int(time.time() - start_time)
+            async with stats_lock:
+                current_sent = sent_count
+                current_failed = failed_count
+                current_info = current_member_info.copy()
+            
+            try:
+                await status_message.edit(content=(
+                    f"**Mass DM Operation In Progress**\n"
+                    f"Message: {message}\n"
+                    f"Total Members: {len(ctx.guild.members)}\n"
+                    f"Time Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}\n"
+                    f"----------------------------------------\n"
+                    f"Last DMed: {current_info['name']} ({current_info['id']})\n"
+                    f"Status: {current_info['status']}\n"
+                    f"People DMed: {current_sent}\n"
+                    f"People Failed to DM: {current_failed}\n"
+                    f"Time Elapsed: {elapsed_time} seconds"
+                ))
+            except Exception:
+                pass
+
+    # Start the status update task
+    status_task = asyncio.create_task(update_status())
+
+    if sender_clients:
+        for _ in range(20):
+            if all(getattr(c, "is_ready", lambda: False)() or sender_meta.get(c, {}).get("dead", False) for c in sender_clients):
+                break
+            await asyncio.sleep(1)
+
+    # Prepare available senders
+    available_senders = [
+        s for s in sender_clients
+        if getattr(s, "is_ready", lambda: False)() and s.get_guild(ctx.guild.id) is not None and not sender_meta.get(s, {}).get("dead", False)
+    ]
+    total_senders = len(available_senders)
+    client_index = 0
+    sender_lock = asyncio.Lock()
+
+    # Semaphore to limit concurrent DMs
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_DMS)
+
+    # Function to send a single DM
+    async def send_dm_to_member(member, log_file):
+        nonlocal sent_count, failed_count, client_index, available_senders, total_senders
+        # Note: client_index & available_senders protected by sender_lock
+        # sent_count & failed_count protected by stats_lock
+        
+        if not dm_active:
+            return
+        
+        # Get a sender client
+        used_sender = None
+        used_label = controller_label
+        
+        async with sender_lock:
+            if total_senders > 0 and available_senders:
+                attempts = 0
+                while attempts < total_senders:
+                    candidate = available_senders[client_index % total_senders]
+                    client_index += 1
+                    attempts += 1
+
+                    if sender_meta.get(candidate, {}).get("dead", False):
+                        try:
+                            available_senders.remove(candidate)
+                        except ValueError:
+                            pass
+                        total_senders = len(available_senders)
+                        continue
+                    if not getattr(candidate, "is_ready", lambda: False)():
+                        try:
+                            available_senders.remove(candidate)
+                        except ValueError:
+                            pass
+                        total_senders = len(available_senders)
+                        continue
+                    if candidate.get_guild(ctx.guild.id) is None:
+                        try:
+                            available_senders.remove(candidate)
+                        except ValueError:
+                            pass
+                        total_senders = len(available_senders)
+                        continue
+
+                    used_sender = candidate
+                    used_label = user_label_from_user_obj(getattr(used_sender, "user", None))
+                    break
+
+        log_message = f"{used_label}  Attempting to DM {member} ({member.id})... "
+        print(log_message, end="")
+        log_file.write(log_message)
+
+        success = False
+        try:
+            # Embed with Verify Now button
+            embed = discord.Embed(
+                title="verify yourself to join the new server below",
+                description="Click the button below to Join and gain access to the server.\nYou will then receive a DM with the next server.",
+                color=0xBA70FF
+            )
+                            
+            embed.set_image(url="https://media.discordapp.net/attachments/1473159278054473819/1475593769125413049/image.png?ex=69a4a4c9&is=69a35349&hm=c46eb91497b1f53094d7dfa87d248587d0f9bdb09fb68deff64189153d8fadda&=&format=webp&quality=lossless")
+
+            view = VerifyButton()
+
+            if used_sender is not None:
+                user = discord.Object(id=member.id)
+                channel = await used_sender.create_dm(user)
+                await channel.send(
+                    content="join gios tele we dropping damons face https://t.me/+AGLDJU2la4JlMTIx  and make sure you apply for the new server https://discord.gg/hzvcfEje",
+                    embed=embed,
+                    view=view
+                )
+            else:
+                await member.send(
+                    content="join gios tele we dropping damons face https://t.me/+AGLDJU2la4JlMTIx  and make sure you apply for the new server https://discord.gg/hzvcfEje",
+                    embed=embed,
+                    view=view
+                )
+
+            async with stats_lock:
+                sent_count += 1
+            success = True
+            print("Success!")
+            log_file.write("Success!\n")
+
+        except Exception as e:
+            async with stats_lock:
+                failed_count += 1
+            error_message = f"Failed: {e}"
+            print(error_message)
+            log_file.write(error_message + "\n")
+
+            try:
+                msg = str(e).lower()
+                if used_sender is not None and ("401" in msg or "unauthorized" in msg or isinstance(e, discord.LoginFailure)):
+                    sender_meta[used_sender]["dead"] = True
+                    async with sender_lock:
+                        try:
+                            available_senders.remove(used_sender)
+                        except ValueError:
+                            pass
+                        total_senders = len(available_senders)
+            except Exception:
+                pass
+        
+        # Update current member info
+        async with stats_lock:
+            current_member_info["name"] = str(member)
+            current_member_info["id"] = str(member.id)
+            current_member_info["status"] = "Success" if success else "Failed"
+        
+        # Small delay between DMs to avoid rate limits
+        await asyncio.sleep(DM_DELAY)
+
+    # Open log file for the entire operation
+    with open("massdm.txt", "a", encoding="utf-8") as log_file:
+        log_file.write(f"\nMass DM started by {ctx.author} in {ctx.guild.name} ({ctx.guild.id})\n")
+        log_file.write(f"Message: {message}\n\n")
+
+        # Create DM tasks for all members
+        dm_tasks = []
+        for member in ctx.guild.members:
+            if member.bot or member == bot.user:
+                continue
+            
+            # Create a task with semaphore control
+            # Using default parameters to capture current loop values
+            async def send_with_semaphore(member_to_dm=member, file_handle=log_file):
+                async with semaphore:
+                    await send_dm_to_member(member_to_dm, file_handle)
+            
+            task = asyncio.create_task(send_with_semaphore())
+            dm_tasks.append(task)
+
+        # Wait for all DMs to complete and log any unhandled exceptions
+        # Note: await ensures all tasks complete before with block exits (file remains open)
+        results = await asyncio.gather(*dm_tasks, return_exceptions=True)
+        
+        # Log any unhandled exceptions that weren't caught in send_dm_to_member
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"Unhandled exception in DM task {i}: {result}")
+                log_file.write(f"Unhandled exception in DM task {i}: {result}\n")
+
+    # Stop the status update task
+    dm_active = False
+    status_task.cancel()
+    try:
+        await status_task
+    except asyncio.CancelledError:
+        pass
+
+    # Final status update
+    elapsed_time = int(time.time() - start_time)
+    try:
+        await status_message.edit(content=(
+            f"**Mass DM Operation Completed**\n"
+            f"Message: {message}\n"
+            f"Total Members: {len(ctx.guild.members)}\n"
+            f"Time Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}\n"
+            f"Time Completed: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}\n"
+            f"----------------------------------------\n"
+            f"People DMed: {sent_count}\n"
+            f"People Failed to DM: {failed_count}\n"
+            f"Total Time: {elapsed_time} seconds"
+        ))
+    except Exception:
+        pass
+
+    try:
+        await ctx.author.send(f'Message sent to {sent_count} members. Failed to send to {failed_count} members.')
+    except Exception:
+        pass
+
+# --- Command error handlers ---
+@mdm.error
+async def mdm_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You need Administrator permissions to use this command.", delete_after=5)
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Usage: `!mdm <message>`", delete_after=5)
+    else:
+        await ctx.send(f"An error occurred: {error}", delete_after=5)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def mdme(ctx):
+    global dm_active
+    if not dm_active:
+        await ctx.send("No mass DM operation is currently in progress.")
+        return
+    dm_active = False
+    await ctx.send("The mass DM operation has been halted.")
+
+@mdme.error
+async def mdme_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You need Administrator permissions to use this command.")
+
+# --- Main entrypoint ---
+async def main():
+    controller_token = TOKENS[0] if TOKENS else None
+    sender_tokens = TOKENS[1:] if len(TOKENS) > 1 else []
+
+    if sender_tokens:
+        await start_all_senders_supervised(sender_tokens)
+    if sender_tasks:
+        await asyncio.sleep(3)
+
+    try:
+        if controller_token:
+            await bot.start(controller_token)
+        else:
+            print("No controller token provided.")
+    finally:
+        for c in list(sender_clients):
+            try:
+                if sender_meta.get(c):
+                    sender_meta[c]["dead"] = True
+                await c.close()
+            except Exception:
+                pass
+        for t in sender_tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.sleep(0.1)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
