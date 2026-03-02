@@ -266,6 +266,11 @@ async def mdm(ctx, *, message: str):
         client_index = 0
         total_senders = len(available_senders)
         last_status_update = time.time()  # Track last status message update time
+        
+        # *** CONFIGURABLE: Status message update interval ***
+        # Change this value to adjust how often the status message is edited (in seconds)
+        # Higher values = less Discord API calls, faster operation, but less frequent updates
+        STATUS_UPDATE_INTERVAL = 5  # Edit status message every 5 seconds
 
         # Main send loop
         for member in ctx.guild.members:
@@ -360,9 +365,10 @@ async def mdm(ctx, *, message: str):
                 except Exception:
                     pass
 
-            # Update status message every 2 seconds to avoid bugs while still showing progress
+            # Update status message based on STATUS_UPDATE_INTERVAL to avoid rate limits
+            # The status update is non-blocking - bots continue DMing while the edit happens
             current_time = time.time()
-            if current_time - last_status_update >= 2:
+            if current_time - last_status_update >= STATUS_UPDATE_INTERVAL:
                 last_status_update = current_time
                 elapsed_time = int(time.time() - start_time)
                 try:
@@ -381,7 +387,11 @@ async def mdm(ctx, *, message: str):
                 except Exception:
                     pass
 
-            # Minimal delay for maximum speed - can send ~20 DMs per second
+            # *** CONFIGURABLE: DM send delay ***
+            # Change this value to adjust the delay between each DM attempt (in seconds)
+            # Lower values = faster sending, but higher risk of rate limits
+            # Recommended range: 0.05 to 2.0 seconds
+            # Current: 0.05 seconds = ~20 DMs per second per bot
             await asyncio.sleep(0.05)
 
         # Build sender report (used vs skipped)
